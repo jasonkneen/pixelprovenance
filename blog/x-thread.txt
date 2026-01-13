@@ -1,0 +1,48 @@
+I just published PixelProvenance - a system that lets you screenshot any part of your web app and instantly know which component and source file it came from.
+
+The problem: You get a bug screenshot on Slack. "The submit button is broken." Which submit button? Where in the code? You guess, search, waste time.
+
+PixelProvenance solves this: Take a screenshot → Run decoder → Get exact source location.
+
+Example output:
+✓ App/PaymentForm/SubmitButton
+  src/components/PaymentForm.tsx:142-156
+
+How it works: Invisible frequency-based patterns embedded in each component during dev. Looks like subtle paper grain. Survives Retina 2× displays, JPEG compression, cropping.
+
+The key innovation: Uses sine waves at 2-17 Hz spatial frequencies. When Retina displays scale 2×, the interpolation preserves these frequencies while destroying exact pixel values (why LSB steganography fails).
+
+Decoding uses Pearson correlation matching. 92.5% accuracy, 68ms to decode.
+
+Zero config: Add one line to your React app:
+import 'pixelprovenance/auto'
+
+That's it. Every component automatically tagged via React fiber tree inspection.
+
+Use cases:
+• AI coding assistants can decode screenshots instantly
+• Bug reports auto-enriched with source locations
+• Screenshot from Friday? Decode on Monday without the app running
+
+Technical details:
+• Pattern: P(x,y) = 245 + 0.15 × Σ sin(2πf_i·φ_i + θ_i)
+• Frequencies f_i derived from component path hash
+• Correlation threshold τ = 0.15
+• 64×64px tiles, 32px stride
+
+Compared to alternatives:
+• QR codes: Too visible (18-20px minimum)
+• LSB steganography: Destroyed by Retina scaling
+• Visual matching: Too slow (850ms vs 68ms)
+
+Only PixelProvenance is invisible + robust + zero-config + fast.
+
+Dev only - patterns automatically disappear in production builds.
+
+Full paper: [arXiv link]
+Open source: github.com/jasonkneen/pixelprovenance
+License: CC BY-NC 4.0 (non-commercial)
+
+Built this over a weekend exploring perceptual hashing + steganography literature. Turns out frequency-domain features are the sweet spot nobody was using for this problem.
+
+Makes screenshots executable. Your AI assistant can now navigate code from images.

@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "declaration": true,
+    "declarationMap": true,
+    "noEmit": false,
+    "rootDir": ".",
+    "allowImportingTsExtensions": false,
+    "moduleResolution": "node"
+  },
+  "include": ["src/**/*", "decoder/decode.ts"],
+  "exclude": ["src/demo.tsx", "node_modules", "dist"]
+}

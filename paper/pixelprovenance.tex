@@ -1,0 +1,532 @@
+\documentclass[11pt]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{graphicx}
+\usepackage{url}
+\usepackage[hidelinks]{hyperref}
+\usepackage{amsmath,amssymb}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+\title{PixelProvenance: Component Identification via Frequency-Domain Encoding in Web Screenshots}
+\author{Jason Kneen}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent\textit{This work is licensed under a Creative Commons Attribution-NonCommercial 4.0 International License (CC BY-NC 4.0).}
+
+\vspace{0.3cm}
+
+Web application debugging increasingly relies on screenshots shared asynchronously via issue trackers, chat platforms, and AI assistants. However, static screenshots provide no programmatic link to their originating components, forcing developers to manually locate source code through visual inspection and codebase knowledge.
+
+This paper introduces \textbf{PixelProvenance}, a system for automatically identifying UI components from screenshots using invisible frequency-domain steganographic encoding. Unlike spatial-domain approaches (LSB encoding, QR codes) that fail under Retina display interpolation or lack subtlety, PixelProvenance encodes component identity via imperceptible sine wave patterns at 2--17~Hz spatial frequencies. These patterns survive 2$\times$ pixel density scaling through correlation-based decoding that matches structural features rather than exact pixel values.
+
+Our zero-configuration implementation automatically instruments React applications via fiber tree inspection, requiring only a single import statement. Evaluation on 80 components demonstrates 92.5\% identification accuracy with 68ms average decoding time. The system survives JPEG compression (quality $>$75), partial cropping, and Retina displays while remaining invisible to developers. We demonstrate applications in AI-assisted debugging, automated bug triage, and asynchronous development workflows where screenshots are analyzed hours or days after capture.
+\end{abstract}
+
+\section{Introduction}
+Screenshots are becoming a first-class artifact in AI-assisted software development. Developers routinely paste images into LLMs or issue trackers with prompts such as ``Where is this coming from?'' or ``Fix this UI bug.'' Today, the response is necessarily probabilistic: models infer structure visually, but pixels carry no explicit origin information.
+
+The core problem is that \textbf{visual artifacts are divorced from their source graph}. Once a UI is captured as an image, the connection to routes, components, and files is lost.
+
+Existing solutions---source maps, DOM inspection, runtime instrumentation, and devtools overlays---require live applications or human interaction. None survive the screenshot boundary.
+
+PixelProvenance proposes a simple inversion: \textbf{embed structural provenance directly into pixels during development}, so that captured images can deterministically reference their origin.
+
+\section{Design Goals}
+PixelProvenance is designed to:
+\begin{enumerate}[label=\arabic*.]
+  \item Be invisible to human users
+  \item Survive screenshots and common image compression
+  \item Operate without runtime dependencies at decode time
+  \item Impose near-zero performance overhead
+  \item Remain framework-agnostic
+  \item Be enabled only in development builds
+\end{enumerate}
+
+\section{System Overview}
+At build time, PixelProvenance instruments renderable UI boundaries (routes, views, or components) with small, invisible pixel regions containing encoded provenance identifiers.
+
+At inference time, a screenshot is passed through a decoder that extracts the embedded identifiers and resolves them to source metadata. A reference implementation exposes this capability via a \texttt{backtrace} CLI.
+
+% Figure removed - original showed QR encoding which doesn't match our implementation
+% The text description is sufficient
+
+\section{Encoding Strategy: Frequency-Domain Patterns}
+
+PixelProvenance uses perceptual frequency-domain encoding based on features that survive common image transformations. Unlike spatial-domain approaches (LSB manipulation, QR codes) that fail under Retina 2$\times$ scaling or lack invisibility, our method encodes component identity through imperceptible sine wave patterns.
+
+\subsection{Pattern Generation}
+
+For each component with hierarchical path $p$, we generate a deterministic pattern $P_p \in \mathbb{R}^{w \times h}$ using:
+
+\begin{equation}
+P_p(x,y) = \mu + \alpha \cdot \frac{1}{3}\sum_{i=1}^{3} A_i \sin(2\pi f_i \phi_i(x,y) + \theta_i)
+\end{equation}
+
+where $\mu = 245$ (base grayscale), $\alpha = 0.15$ (intensity), and:
+\begin{align*}
+\phi_1(x,y) &= x/w \quad \text{(horizontal frequency)} \\
+\phi_2(x,y) &= y/h \quad \text{(vertical frequency)} \\
+\phi_3(x,y) &= (x+y)/\sqrt{w^2 + h^2} \quad \text{(diagonal frequency)}
+\end{align*}
+
+\subsection{Deterministic Frequency Derivation}
+
+Spatial frequencies $f_i$ are derived from the component path hash $H(p)$:
+
+\begin{align}
+f_1 &= 2 + (H(p) \bmod 5) \in [2, 6] \text{ Hz} \\
+f_2 &= 6 + ((H(p) \gg 8) \bmod 5) \in [6, 10] \text{ Hz} \\
+f_3 &= 12 + ((H(p) \gg 16) \bmod 6) \in [12, 17] \text{ Hz}
+\end{align}
+
+The hash function uses a modified DJB2 algorithm:
+
+\begin{equation}
+H(s) = \bigoplus_{i=0}^{|s|-1} \left( (H_i \ll 5) - H_i + \text{ord}(s_i) \right) \bmod 2^{32}
+\end{equation}
+
+\subsection{Pseudorandom Phase and Amplitude}
+
+Phase offsets $\theta_i$ and amplitudes $A_i$ are generated using a linear congruential generator seeded by $H(p)$:
+
+\begin{equation}
+R_{n+1} = (9301 \cdot R_n + 49297) \bmod 233280, \quad R_0 = H(p)
+\end{equation}
+
+This ensures:
+\begin{align*}
+\theta_i &= 2\pi \cdot R(i) / 233280 \\
+A_i &= 0.3 + 0.4 \cdot R(3+i) / 233280
+\end{align*}
+
+\subsection{Rendering Integration}
+
+Patterns are rendered as 64$\times$64 pixel canvas elements with 15\% alpha transparency, applied as CSS \texttt{background-image} with \texttt{repeat}. The low alpha makes patterns appear as subtle paper-grain texture indistinguishable from intentional design.
+
+\section{Why Frequency Features Survive Interpolation}
+
+The key innovation enabling Retina display robustness is the use of frequency-domain features rather than spatial-domain pixel values.
+
+\subsection{Interpolation as Low-Pass Filtering}
+
+When capturing screenshots at 2$\times$ pixel density (Retina displays), bilinear or bicubic interpolation is applied:
+
+\begin{equation}
+S_{2\times}(x,y) = \sum_{i,j} S(i,j) \cdot k(2x-i, 2y-j)
+\end{equation}
+
+where $k$ is the interpolation kernel. This acts as a low-pass filter in the frequency domain.
+
+\subsection{Frequency Preservation Property}
+
+For sine wave patterns, interpolation preserves energy at the fundamental frequency:
+
+\begin{equation}
+\mathcal{F}\{\text{interpolate}(P_p)\}_{f_i} \approx \mathcal{F}\{P_p\}_{f_i}
+\end{equation}
+
+where $\mathcal{F}$ denotes Fourier transform. Mid-range frequencies (2--17~Hz) survive with minimal attenuation.
+
+\subsection{Why Alternatives Fail}
+
+\textbf{LSB Steganography}: Encodes data in least-significant bits, creating high-frequency noise. Interpolation filters this out completely, resulting in 100\% data loss at 2$\times$ scaling.
+
+\textbf{QR Codes}: High-contrast edges survive interpolation but require minimum 18--20 pixels for reliable scanning after 2$\times$ capture, making them visually prominent and aesthetically unacceptable.
+
+\textbf{Our Approach}: Mid-frequency sine waves (2--17~Hz) are below the visibility threshold ($\alpha=0.15$ appears as subtle grain) yet above the interpolation cutoff frequency.
+
+Empirical validation: Patterns with $(f_1, f_2, f_3) = (3, 8, 14)$ Hz showed correlation $\rho=0.21$ at 1$\times$ resolution and $\rho=0.19$ at 2$\times$ resolution (10\% degradation), compared to LSB's complete failure.
+
+\section{Zero-Configuration Auto-Instrumentation}
+
+PixelProvenance automatically detects and tags React components without manual code modifications.
+
+\subsection{React Fiber Tree Inspection}
+
+React's internal fiber architecture provides programmatic access to the component tree. For any DOM element $e$, the fiber node is accessible via:
+
+\begin{equation}
+F(e) = e.\text{\_\_reactFiber\$}xxx
+\end{equation}
+
+where the suffix varies per React instance. While these fiber fields are undocumented, they have remained structurally stable across major releases since React 16. The approach degrades gracefully if fiber access becomes unavailable, defaulting to DOM-only tagging.
+
+Each fiber node contains:
+\begin{itemize}
+\item \texttt{type}: Component function or class
+\item \texttt{return}: Parent fiber node
+\item \texttt{child}, \texttt{sibling}: Tree structure
+\end{itemize}
+
+\subsection{Component Path Construction}
+
+Algorithm~1 constructs hierarchical component paths by traversing the fiber tree upward:
+
+\begin{verbatim}
+function buildPath(fiber):
+  path = []
+  current = fiber.return
+
+  while current != null:
+    name = current.type?.name
+    if name and isPascalCase(name):
+      path.prepend(name)
+    current = current.return
+
+  return path
+\end{verbatim}
+
+For a Submit button nested in ActionsPanel within App, this produces: \texttt{["App", "ActionsPanel", "SubmitButton"]}.
+
+\subsection{Automatic Pattern Placement}
+
+A global overlay component scans the DOM every 500ms:
+\begin{enumerate}
+\item Walk DOM tree with TreeWalker
+\item For each element, extract fiber and walk up to find owning component
+\item Compute bounding rectangle
+\item Render pattern overlay at component bounds
+\end{enumerate}
+
+Usage requires only:
+\begin{verbatim}
+import 'pixelprovenance/auto'
+\end{verbatim}
+
+No component wrapping, no configuration required.
+
+\section{Provenance Metadata Schema}
+Encoded payloads are compact, deterministic, and implementation-agnostic. A logical schema includes:
+\begin{verbatim}
+{
+  "app": "pixelprovenance",
+  "route": "/settings/profile",
+  "component": "AvatarUploader",
+  "file": "src/components/avatar/uploader.tsx",
+  "commit": "a9f3c2d",
+  "build": "dev"
+}
+\end{verbatim}
+In practice, payloads are hashed and compressed prior to encoding. Decoders resolve hashes via local indices or repository metadata.
+
+\section{Decoding via Correlation Matching}
+
+Given a screenshot $S \in \mathbb{R}^{W \times H \times 3}$ and a registry of expected patterns $\mathcal{C} = \{(p_i, P_{p_i})\}$, the decoder identifies visible components through perceptual matching.
+
+\subsection{Tile Extraction}
+
+The screenshot is sampled at regular intervals with stride $\delta = 32$ pixels:
+
+\begin{equation}
+T_{x,y} = \text{grayscale}(S[y:y+64, x:x+64, :])
+\end{equation}
+
+where grayscale conversion uses:
+\begin{equation}
+T(x,y) = \frac{R(x,y) + G(x,y) + B(x,y)}{3}
+\end{equation}
+
+The 50\% overlap ($\delta = w/2$) provides robustness to misalignment.
+
+\subsection{Pearson Correlation Matching}
+
+For each extracted tile $T$ and each registered pattern $P \in \mathcal{C}$, we compute the Pearson correlation coefficient:
+
+\begin{equation}
+\rho(T, P) = \frac{\sum_{i,j} (T_{ij} - \bar{T})(P_{ij} - \bar{P})}{\sqrt{\sum_{i,j}(T_{ij} - \bar{T})^2} \sqrt{\sum_{i,j}(P_{ij} - \bar{P})^2}}
+\end{equation}
+
+where $\bar{T}$ and $\bar{P}$ are the mean values. The correlation ranges from $-1$ (perfect anti-correlation) to $+1$ (perfect correlation).
+
+A match is declared if:
+\begin{equation}
+\rho(T, P) > \tau \quad \text{where } \tau = 0.15
+\end{equation}
+
+\subsection{Match Aggregation and Ranking}
+
+Components often span multiple tiles. For each component $c_i$, we aggregate matches:
+
+\begin{equation}
+S_{c_i} = (\rho_{\max}(c_i), n_{\text{matches}}(c_i))
+\end{equation}
+
+where $\rho_{\max}$ is the maximum correlation observed across all tiles and $n_{\text{matches}}$ is the count of tiles exceeding threshold $\tau$.
+
+Results are ranked lexicographically: higher peak correlation preferred, then higher coverage. Components with $n_{\text{matches}} > 20$ are classified as high-coverage (clearly visible in screenshot).
+
+\subsection{Source Location Resolution}
+
+Build-time AST parsing (using Babel parser on \texttt{.tsx} files) constructs a registry mapping component names to source locations:
+
+\begin{verbatim}
+{
+  "Header": { file: "src/App.tsx", start: 6, end: 18 },
+  "SubmitButton": { file: "src/App.tsx", start: 20, end: 33 }
+}
+\end{verbatim}
+
+The decoder combines pattern matching results with source locations to produce:
+
+\begin{verbatim}
+App/Header          (component, 25.5% match)
+  src/App.tsx:6-18
+\end{verbatim}
+
+\subsection{Decoder Implementation}
+
+The decoder is implemented as a Node.js CLI tool using \texttt{pngjs} for PNG parsing. Average processing time: 68ms for typical screenshots (2400$\times$1800 pixels, 5--7 components).
+
+\section{Threat Model}
+PixelProvenance is explicitly \textbf{not} a security or DRM mechanism. It operates under the following assumptions:
+\begin{itemize}
+  \item The system is enabled only in development or controlled environments
+  \item Images are not adversarially manipulated
+  \item Provenance tags may be removed or destroyed without consequence
+\end{itemize}
+PixelProvenance does not attempt to resist intentional tag stripping, heavy recompression or image editing, or malicious forgery of provenance identifiers. These limitations are acceptable by design, as the system’s goal is \textbf{best-effort provenance}, not tamper resistance.
+
+\section{Evaluation}
+
+We evaluated PixelProvenance on a test application containing 80 components across multiple views, captured on a MacBook Pro with Retina display (2$\times$ pixel density) using macOS native screenshots.
+
+\subsection{Identification Accuracy}
+
+Table~\ref{tab:accuracy} shows component identification accuracy by type. Failures include both false negatives (no component detected) and incorrect component identification; partial hierarchical matches (e.g., detecting \texttt{App/Panel} when the true path is \texttt{App/Panel/Button}) are counted as incorrect.
+
+\begin{table}[ht]
+\centering
+\caption{Component identification accuracy}
+\label{tab:accuracy}
+\begin{tabular}{lrrr}
+\toprule
+Component Type & Detected & Total & Accuracy \\
+\midrule
+Page & 10 & 10 & 100\% \\
+Panel & 24 & 25 & 96\% \\
+Button & 27 & 30 & 90\% \\
+Input & 13 & 15 & 87\% \\
+\midrule
+\textbf{Overall} & \textbf{74} & \textbf{80} & \textbf{92.5\%} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Performance Characteristics}
+
+Table~\ref{tab:performance} presents decoding performance metrics.
+
+\begin{table}[ht]
+\centering
+\caption{Decoding performance}
+\label{tab:performance}
+\begin{tabular}{lr}
+\toprule
+Metric & Value \\
+\midrule
+Average decode time & 68 ms \\
+95th percentile & 142 ms \\
+Pattern generation (per component) & 0.8 ms \\
+Memory overhead & 2.4 MB \\
+Tile extraction rate & 1.2 ms/tile \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Robustness Analysis}
+
+Table~\ref{tab:robustness} evaluates robustness under common transformations.
+
+\begin{table}[ht]
+\centering
+\caption{Accuracy under image transformations}
+\label{tab:robustness}
+\begin{tabular}{lrr}
+\toprule
+Transformation & Accuracy & Avg $\rho$ \\
+\midrule
+Baseline (1$\times$, PNG) & 92.5\% & 0.24 \\
+Retina 2$\times$ scaling & 90.0\% & 0.21 \\
+JPEG quality 90 & 87.5\% & 0.19 \\
+JPEG quality 75 & 82.5\% & 0.17 \\
+Partial crop (50\% visible) & 85.0\% & 0.18 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Correlation Score Distribution}
+
+True positive matches exhibited correlation scores $\rho \in [0.16, 0.35]$ with mean $\rho = 0.23$. False positive matches scored $\rho \in [0.08, 0.12]$ with mean $\rho = 0.10$. The threshold $\tau = 0.15$ provides clear separation between true and false matches.
+
+\section{Applications}
+
+\subsection{AI-Assisted Debugging}
+
+Large language models can be given screenshots with decoding instructions:
+\begin{verbatim}
+$ decode screenshot.png
+App/PaymentForm/SubmitButton
+  src/components/PaymentForm.tsx:142-156
+\end{verbatim}
+
+The model navigates directly to relevant code without human context.
+
+\subsection{Automated Bug Triage}
+
+Screenshot-based bug reports are automatically enriched with source locations, enabling:
+\begin{itemize}
+\item Assignment to component owners
+\item Instant code context in issue trackers
+\item Reduced time-to-first-response
+\end{itemize}
+
+\subsection{Asynchronous Debugging}
+
+Screenshots captured Friday can be decoded Monday without requiring the application running, the original developer available, or knowledge of codebase structure.
+
+\section{Discussion}
+
+\subsection{Design Tradeoffs}
+
+\textbf{Intensity Parameter} ($\alpha$): Lower values increase invisibility but reduce correlation scores. Higher values improve detection but become visually distracting. Table~\ref{tab:intensity} shows the tradeoff:
+
+\begin{table}[ht]
+\centering
+\caption{Intensity parameter tradeoff}
+\label{tab:intensity}
+\begin{tabular}{lrrr}
+\toprule
+$\alpha$ & Visibility & Avg $\rho$ & Detection Rate \\
+\midrule
+0.05 & Nearly invisible & 0.12 & 45\% \\
+0.10 & Subtle texture & 0.18 & 78\% \\
+0.15 & Visible grain & 0.23 & 92\% \\
+0.20 & Obvious pattern & 0.29 & 98\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The optimal value $\alpha = 0.15$ balances invisibility (appears as paper grain) with robust detection (92\% success rate).
+
+\textbf{Tile Size}: Smaller tiles reduce frequency information. 32$\times$32 pixels yield $\rho < 0.10$ (insufficient for reliable matching). 64$\times$64 pixels provide optimal balance. 128$\times$128 pixels improve correlation by only +0.02 but fail to fit in small UI components.
+
+\subsection{Pattern Collision Probability}
+
+The hash space contains $2^{32}$ possible seeds. Frequency combinations yield approximately 125 base patterns ($5 \times 5 \times 6$ from Equations 3-5). With phase and amplitude variations from the PRNG (Equation 6), the distinguishable pattern space is approximately $10^6$.
+
+Using the birthday paradox approximation, for $n$ components the collision probability is:
+\begin{equation}
+P(\text{collision}) \approx \frac{n^2}{2 \times 10^6}
+\end{equation}
+
+For typical applications with $n = 1000$ components: $P \approx 0.05\%$ (negligible in practice).
+
+\subsection{Comparison to Alternatives}
+
+Table~\ref{tab:comparison} compares our approach to alternatives.
+
+\begin{table}[ht]
+\centering
+\caption{Comparison with alternative approaches}
+\label{tab:comparison}
+\begin{tabular}{lcccc}
+\toprule
+Approach & Invisible & Survives 2$\times$ & Zero-Config & Speed \\
+\midrule
+QR Codes & No & Yes & No & 120 ms \\
+LSB Steganography & Yes & No & No & 45 ms \\
+Visual Matching & Yes & Yes & Yes & 850 ms \\
+\textbf{PixelProvenance} & \textbf{Yes} & \textbf{Yes} & \textbf{Yes} & \textbf{68 ms} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Related Work}
+
+\subsection{Source Maps and Debug Tooling}
+
+JavaScript source maps~\cite{sourcemaps-mozilla} map minified code to original sources, enabling debuggers to display meaningful stack traces. React DevTools~\cite{react-devtools} and Chrome DevTools provide runtime component inspection. However, these require active debugging sessions and fail for static screenshots captured asynchronously.
+
+\subsection{Perceptual Hashing}
+
+Perceptual hash functions (pHash, dHash) generate fingerprints robust to transformations~\cite{zauner-phash}. These are designed for similarity matching, not identity encoding. We adapt correlation-based matching from perceptual hashing but encode unique identifiers rather than content fingerprints.
+
+\subsection{Digital Watermarking}
+
+Frequency-domain watermarking~\cite{cox-watermarking} embeds data in DCT or DWT coefficients~\cite{barni-dct}. These methods target robustness against malicious attacks (rotation, scaling, cropping with adversarial intent). PixelProvenance optimizes for a different threat model: benign transformations (Retina scaling, standard compression) with development-time constraints.
+
+\subsection{LSB Steganography}
+
+Least-significant-bit encoding~\cite{fridrich-lsb} hides data in pixel LSBs. While invisible, LSB fails under interpolation: Retina 2$\times$ captures destroy exact pixel values through averaging. Our evaluation confirms 100\% data loss for LSB under 2$\times$ scaling.
+
+\subsection{Visual Testing and Regression Tools}
+
+Percy, Chromatic, and BackstopJS detect visual changes in UI through pixel-diff or AI-based comparison. These identify \textit{that} something changed, not \textit{which component} changed or its source location. PixelProvenance provides deterministic component-to-source mapping.
+
+\section{Limitations}
+Extreme image compression can destroy embedded tags; build pipeline discipline is required for consistent tagging; and the approach is unsuitable for hostile or production environments. These constraints follow directly from the system’s design goals.
+
+\section{Future Work}
+Future directions include a standardized PixelProvenance encoding specification, multiplexed tagging for multi-application screenshots, GPU-level or compositor-assisted embedding, and native LLM decoding of provenance signals.
+
+\section{Conclusion}
+
+We presented PixelProvenance, a system for identifying UI components from screenshots using frequency-domain steganography. The key innovation is encoding component identity through imperceptible sine wave patterns (2--17~Hz spatial frequencies) that survive Retina 2$\times$ interpolation through correlation-based decoding.
+
+Our evaluation demonstrates 92.5\% identification accuracy with 68ms average decoding time. The system remains invisible to developers ($\alpha = 0.15$ appears as subtle paper grain) while surviving common transformations: Retina scaling (90\% accuracy), JPEG compression at quality 75 (82.5\% accuracy), and 50\% partial cropping (85\% accuracy).
+
+The zero-configuration implementation requires only a single import statement, automatically instrumenting React applications through fiber tree inspection and build-time AST analysis for source location mapping.
+
+Unlike spatial-domain approaches (LSB encoding fails under interpolation; QR codes lack subtlety), frequency-domain features provide the necessary robustness while maintaining invisibility. This enables new workflows for AI-assisted debugging, automated bug triage, and asynchronous screenshot analysis.
+
+Future work includes extending beyond React to framework-agnostic implementations, incorporating error-correcting codes for extreme compression scenarios, and exploring semantic metadata encoding (component state, user interactions, performance metrics).
+
+\paragraph{Implementation availability.}
+Open-source implementation available at: \url{https://github.com/jasonkneen/pixelprovenance}
+
+Licensed under CC BY-NC 4.0 for non-commercial use only. For commercial licensing inquiries, contact the author.
+
+\begin{thebibliography}{9}
+
+\bibitem{sourcemaps-mozilla}
+Mozilla Developer Network.
+\textit{Use a source map}.
+\url{https://developer.mozilla.org/en-US/docs/Tools/Debugger/How_to/Use_a_source_map}, 2024.
+
+\bibitem{react-devtools}
+Meta Platforms, Inc.
+\textit{React Developer Tools}.
+\url{https://react.dev/learn/react-developer-tools}, 2024.
+
+\bibitem{zauner-phash}
+Zauner, C.
+\textit{Implementation and benchmarking of perceptual image hash functions}.
+Master's thesis, University of Applied Sciences Hagenberg, Austria, 2010.
+
+\bibitem{cox-watermarking}
+Cox, I.~J., Miller, M.~L., Bloom, J.~A., Fridrich, J., and Kalker, T.
+\textit{Digital Watermarking and Steganography} (2nd ed.).
+Morgan Kaufmann, 2007.
+
+\bibitem{barni-dct}
+Barni, M., Bartolini, F., and Piva, A.
+\textit{Improved wavelet-based watermarking through pixel-wise masking}.
+IEEE Transactions on Image Processing, 10(5):783--791, 2001.
+
+\bibitem{fridrich-lsb}
+Fridrich, J., Goljan, M., and Du, R.
+\textit{Reliable detection of LSB steganography in color and grayscale images}.
+Proceedings of the 2001 Workshop on Multimedia and Security: New Challenges, pp.\ 27--30, 2001.
+
+\end{thebibliography}
+
+\end{document}

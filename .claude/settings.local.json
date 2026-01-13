@@ -1,0 +1,6 @@
+{
+  "enabledMcpjsonServers": [
+    "codex"
+  ],
+  "enableAllProjectMcpServers": true
+}

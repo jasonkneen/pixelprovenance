@@ -1,0 +1,75 @@
+{
+  "name": "pixelprovenance",
+  "version": "0.1.0",
+  "description": "Component identification from screenshots via frequency-domain encoding",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    },
+    "./auto": {
+      "types": "./dist/src/auto/index.d.ts",
+      "import": "./dist/src/auto/index.js"
+    },
+    "./plugin": {
+      "types": "./dist/src/plugin/index.d.ts",
+      "import": "./dist/src/plugin/index.js"
+    },
+    "./plugin/source-map": {
+      "types": "./dist/src/plugin/source-map-plugin.d.ts",
+      "import": "./dist/src/plugin/source-map-plugin.js"
+    },
+    "./decode": {
+      "types": "./dist/decoder/decode.d.ts",
+      "import": "./dist/decoder/decode.js"
+    }
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "build:lib": "tsc --project tsconfig.lib.json",
+    "preview": "vite preview",
+    "decode": "tsx decoder/decode.ts",
+    "prepublishOnly": "npm run build:lib"
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4"
+  },
+  "peerDependencies": {
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0"
+  },
+  "devDependencies": {
+    "@babel/parser": "^7.28.6",
+    "@babel/traverse": "^7.28.6",
+    "@types/babel__parser": "^7.0.0",
+    "@types/babel__traverse": "^7.28.0",
+    "@types/node": "^20.10.0",
+    "@types/pngjs": "^6.0.4",
+    "@types/qrcode": "^1.5.6",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "@vitejs/plugin-react": "^4.2.0",
+    "jsqr": "^1.4.0",
+    "pngjs": "^7.0.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.0",
+    "vite": "^5.0.0"
+  },
+  "files": [
+    "dist",
+    "decoder",
+    "registry"
+  ],
+  "keywords": [
+    "dev-tools",
+    "screenshot",
+    "debugging",
+    "component-tagging",
+    "steganography"
+  ]
+}
