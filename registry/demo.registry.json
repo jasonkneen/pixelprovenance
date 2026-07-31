@@ -1,0 +1,79 @@
+[
+  {
+    "path": "MORROW_DASHBOARD/workspace-nav",
+    "type": "navigation",
+    "depth": 2,
+    "source": { "file": "src/features/dashboard/WorkspaceNav.tsx", "line": 18, "column": 7 }
+  },
+  {
+    "path": "MORROW_DASHBOARD/workspace-nav/nav-overview",
+    "type": "nav-item",
+    "depth": 3,
+    "patternSize": 32,
+    "source": { "file": "src/features/dashboard/WorkspaceNav.tsx", "line": 28, "column": 9 }
+  },
+  {
+    "path": "MORROW_DASHBOARD/workspace-nav/nav-projects",
+    "type": "nav-item",
+    "depth": 3,
+    "patternSize": 32,
+    "source": { "file": "src/features/dashboard/WorkspaceNav.tsx", "line": 34, "column": 9 }
+  },
+  {
+    "path": "MORROW_DASHBOARD/progress-summary",
+    "type": "metric-card",
+    "depth": 2,
+    "source": { "file": "src/features/dashboard/ProgressSummary.tsx", "line": 26, "column": 5 }
+  },
+  {
+    "path": "MORROW_DASHBOARD/open-tasks",
+    "type": "metric-card",
+    "depth": 2,
+    "source": { "file": "src/features/dashboard/OpenTasksStat.tsx", "line": 14, "column": 5 }
+  },
+  {
+    "path": "MORROW_DASHBOARD/team-focus",
+    "type": "metric-card",
+    "depth": 2,
+    "source": { "file": "src/features/dashboard/TeamFocusStat.tsx", "line": 14, "column": 5 }
+  },
+  {
+    "path": "MORROW_DASHBOARD/sprint-overview",
+    "type": "project-card",
+    "depth": 2,
+    "source": { "file": "src/features/dashboard/SprintOverview.tsx", "line": 41, "column": 5 }
+  },
+  {
+    "path": "MORROW_DASHBOARD/sprint-overview/pill-research",
+    "type": "chip",
+    "depth": 3,
+    "patternSize": 32,
+    "source": { "file": "src/features/dashboard/SprintOverview.tsx", "line": 58, "column": 11 }
+  },
+  {
+    "path": "MORROW_DASHBOARD/sprint-overview/pill-design-system",
+    "type": "chip",
+    "depth": 3,
+    "patternSize": 32,
+    "source": { "file": "src/features/dashboard/SprintOverview.tsx", "line": 61, "column": 11 }
+  },
+  {
+    "path": "MORROW_DASHBOARD/sprint-overview/pill-handoff",
+    "type": "chip",
+    "depth": 3,
+    "patternSize": 32,
+    "source": { "file": "src/features/dashboard/SprintOverview.tsx", "line": 64, "column": 11 }
+  },
+  {
+    "path": "MORROW_DASHBOARD/activity-feed",
+    "type": "activity-panel",
+    "depth": 2,
+    "source": { "file": "src/features/dashboard/ActivityFeed.tsx", "line": 22, "column": 7 }
+  },
+  {
+    "path": "MORROW_DASHBOARD/create-task",
+    "type": "button",
+    "depth": 2,
+    "source": { "file": "src/features/tasks/CreateTaskButton.tsx", "line": 12, "column": 7 }
+  }
+]

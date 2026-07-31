@@ -1,164 +1,147 @@
-# Morrow DevTag - Usage Guide
+# PixelProvenance usage guide
 
-## Installation (Local Development)
+## Installation
+
+The package is not yet published. Build and pack a checkout before installing
+it into another project:
 
 ```bash
-# In your project
-npm install /path/to/morrow-devtag
+cd /absolute/path/to/pixelprovenance
+npm install
+npm run check
+npm pack
+
+cd /path/to/consumer
+npm install /absolute/path/to/pixelprovenance/pixelprovenance-0.2.0.tgz
 ```
 
-Or add to package.json:
+Or install the published package when available:
+
+```bash
+npm install pixelprovenance
+```
+
+React 18 and React 19 are supported peer ranges. Node 20.19 or newer is required.
+
+## Component props
+
+### `DevTagRoot`
+
+| Prop | Type | Default | Purpose |
+| --- | --- | --- | --- |
+| `pageId` | `string` | required | Root path segment |
+| `enabled` | `boolean` | development detection | Explicit marker switch |
+| `intensity` | `number` | `0.06` | Pattern signal strength, clamped to 0-1 |
+| `patternSize` | `number` | `64` | CSS tile size, clamped to 16-256 |
+| `debug` | `boolean` | `false` | Reveals the tagged region border |
+| `signal` | `boolean` | `true` | Suppresses this boundary's own pattern while retaining its path context |
+| `className` | `string` | — | Wrapper class |
+| `style` | `CSSProperties` | — | Wrapper styles |
+
+### `DevTag`
+
+`DevTag` accepts the same rendering controls plus:
+
+| Prop | Type | Default | Purpose |
+| --- | --- | --- | --- |
+| `id` | `string` | required | Stable path segment |
+| `type` | `string` | `component` | Category included in the pattern seed |
+| `source` | `{ file, line, column }` | — | Code location **embedded in the noise** |
+| `children` | `ReactNode` | required | Tagged region |
+
+Use IDs that remain stable across builds. Avoid list indexes, generated UUIDs, or user data.
+
+When `source` is set, it is part of the pattern seed together with path, type, and depth. Encode and decode must use the same values or correlation fails.
+
+## Intensity guidance
+
+| Value | Expected appearance | Suggested use |
+| --- | --- | --- |
+| `0.05-0.08` | Intended to be visually imperceptible | Starting range for normal development |
+| `0.10-0.16` | Faint under inspection | Decoder calibration |
+| `0.20-0.30` | Stronger machine signal | Stress testing; likely too visible for normal UI review |
+
+The effective screenshot signal is also affected by the tagged region's colors and texture.
+
+## Decoder registry
+
+The CLI accepts either an array of descriptors or an object with a `components` array. Every descriptor must contain `path`, `type`, and numeric `depth` values.
+
+Tag a **hierarchy**: parent panels and nested leaves (chips, nav items, rows). Each tag embeds its own `source` into the noise; the registry/codebook lists the same embeddings for correlation. On decode, the deepest confident match wins, so a crop of a chip resolves to the chip’s line, not only the parent card.
+
 ```json
 {
-  "dependencies": {
-    "morrow-devtag": "file:../morrow-devtag"
-  }
+  "components": [
+    {
+      "path": "SETTINGS/profile",
+      "type": "panel",
+      "depth": 2,
+      "source": {
+        "file": "src/features/settings/ProfilePanel.tsx",
+        "line": 31,
+        "column": 5
+      }
+    },
+    {
+      "path": "SETTINGS/profile/save",
+      "type": "button",
+      "depth": 3,
+      "patternSize": 32,
+      "source": {
+        "file": "src/features/settings/ProfilePanel.tsx",
+        "line": 48,
+        "column": 9
+      }
+    }
+  ]
 }
 ```
 
-## Quick Start
+Optional `patternSize` is the 1× tile size used when that region was encoded (default 64). Use 16–32 for small leaves so a tight crop can cover a full tile.
 
-### 1. Wrap Components
+The registry settings must match the component settings used for capture. If you change root `patternSize` or `intensity`, pass those values to the decoder.
 
-```tsx
-import { DevTagPerceptualRoot, DevTagPerceptual } from 'morrow-devtag'
+## Programmatic decoding
 
-function App() {
-  return (
-    <DevTagPerceptualRoot pageId="DASHBOARD">
-      <div>
-        <DevTagPerceptual id="header" type="panel">
-          <Header />
-        </DevTagPerceptual>
+```ts
+import { readFile } from 'node:fs/promises'
+import { decodePng } from 'pixelprovenance/decode'
 
-        <DevTagPerceptual id="sidebar" type="panel">
-          <Sidebar>
-            <DevTagPerceptual id="nav-home" type="button">
-              <NavButton>Home</NavButton>
-            </DevTagPerceptual>
-          </Sidebar>
-        </DevTagPerceptual>
-      </div>
-    </DevTagPerceptualRoot>
-  )
-}
-```
-
-### 2. Run Your App
-
-```bash
-NODE_ENV=development npm run dev
-```
-
-The patterns only render in development mode.
-
-### 3. Screenshot → Decode
-
-Take a screenshot, then decode:
-
-```bash
-node decode-screenshot.js screenshot.png
-```
-
-Output:
-```
-=== Found 4 components ===
-
-✓ DASHBOARD                           (page, 28.0%, high)
-✓ DASHBOARD/header                    (panel, 24.3%, high)
-✓ DASHBOARD/sidebar                   (panel, 21.7%, medium)
-✓ DASHBOARD/sidebar/nav-home          (button, 18.2%, low)
-```
-
-## Decoder Setup
-
-Create `decode-screenshot.js` in your project:
-
-```javascript
-import { readFileSync } from 'fs'
-import { PNG } from 'pngjs'
-import {
-  buildPerceptualRegistry,
-  scanImagePerceptual
-} from 'morrow-devtag/decoder'
-
-const imagePath = process.argv[2]
-const pngData = readFileSync(imagePath)
-
-// Define YOUR app's component tree
 const components = [
-  { path: 'DASHBOARD', type: 'page', depth: 1 },
-  { path: 'DASHBOARD/header', type: 'panel', depth: 2 },
-  { path: 'DASHBOARD/sidebar', type: 'panel', depth: 2 },
-  { path: 'DASHBOARD/sidebar/nav-home', type: 'button', depth: 3 },
+  {
+    path: 'SETTINGS/profile',
+    type: 'panel',
+    depth: 2,
+    source: {
+      file: 'src/features/settings/ProfilePanel.tsx',
+      line: 31,
+      column: 5,
+    },
+  },
 ]
 
-const registry = buildPerceptualRegistry(components, 64, 0.15)
-const results = scanImagePerceptual(pngData, registry, 64, 0.15)
+const results = decodePng(await readFile('screenshot.png'), components, {
+  intensity: 0.12,
+  patternSize: 64,
+  scales: [1, 2],
+})
 
-for (const r of results) {
-  console.log(`✓ ${r.path} (${r.type}, ${(r.score * 100).toFixed(1)}%)`)
+for (const result of results) {
+  console.log(result.path, result.source, result.score)
 }
 ```
 
-## Component Props
+## Production control
 
-### DevTagPerceptualRoot
-
-```tsx
-<DevTagPerceptualRoot
-  pageId="PAGE_NAME"
-  intensity={0.15}  // 0.05-0.2 (higher = more visible)
->
-  {children}
-</DevTagPerceptualRoot>
-```
-
-### DevTagPerceptual
+Prefer an explicit bundler flag:
 
 ```tsx
-<DevTagPerceptual
-  id="component-id"
-  type="panel|button|modal|etc"
-  intensity={0.15}
-  patternSize={64}
-  disabled={false}
->
-  {children}
-</DevTagPerceptual>
+<DevTagRoot pageId="SETTINGS" enabled={import.meta.env.DEV}>
+  <SettingsPage />
+</DevTagRoot>
 ```
 
-## How It Works
-
-1. **Encoding**: Each component generates a unique sine wave pattern based on its path hash
-2. **Hierarchical**: Paths build automatically (DASHBOARD/panel/button)
-3. **Invisible**: Subtle noise (±4% gray variation) looks like paper grain
-4. **Resilient**: Survives Retina 2x scaling via perceptual correlation matching
-
-## Claude Integration
-
-Give a screenshot to Claude with this instruction:
-
-```
-Here's a screenshot with a bug. Use morrow-devtag decoder to identify which component it is.
-
-Run: node decode-screenshot.js screenshot.png
-```
-
-Claude will decode and tell you:
-```
-Bug in: DASHBOARD/actions-panel/submit-btn (button)
-```
-
-## Intensity Guidelines
-
-| Value | Visibility | Use Case |
-|-------|-----------|----------|
-| 0.05 | Nearly invisible | Production-like demo |
-| 0.10 | Subtle texture | Standard dev mode |
-| 0.15 | Visible grain | Reliable Retina scanning |
-| 0.20 | Obvious pattern | Debugging decoder |
-
-## Production
-
-The components automatically return null when `NODE_ENV !== 'development'`. Zero production impact.
+When disabled, signal attributes and overlays are omitted. A layout wrapper is
+kept only when `className` or `style` was provided; otherwise only the children
+render. The retained wrapper keeps the same default `position: relative` style
+as an enabled tag.

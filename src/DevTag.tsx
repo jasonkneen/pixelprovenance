@@ -1,190 +1,257 @@
-/**
- * DevTag - Invisible noise patterns with perceptual hashing
- *
- * Generates distinctive noise patterns that survive Retina 2x scaling.
- * Uses perceptual features (not exact pixels) for matching.
- */
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from 'react'
 
-import { useEffect, useRef, createContext, useContext, type ReactNode } from 'react'
+import {
+  clampIntensity,
+  clampPatternSize,
+  createPatternPayload,
+  generatePatternRgba,
+  type SourceLocation,
+} from './pattern.js'
 
-interface ComponentContext {
+interface ComponentContextValue {
   path: string[]
   depth: number
+  enabled: boolean
+  intensity: number
+  patternSize: number
+  debug: boolean
 }
 
-const ComponentCtx = createContext<ComponentContext>({ path: [], depth: 0 })
+const ComponentContext = createContext<ComponentContextValue>({
+  path: [],
+  depth: 0,
+  enabled: true,
+  intensity: 0.08,
+  patternSize: 64,
+  debug: false,
+})
 
-// Deterministic PRNG from seed
-class SeededRandom {
-  private seed: number
+const patternUrlCache = new Map<string, string>()
+const MAX_CACHED_PATTERN_URLS = 128
 
-  constructor(seed: number) {
-    this.seed = seed
+function isDevelopmentBuild(): boolean {
+  if (typeof process !== 'undefined' && process.env.NODE_ENV) {
+    return process.env.NODE_ENV !== 'production'
   }
 
-  next(): number {
-    this.seed = (this.seed * 9301 + 49297) % 233280
-    return this.seed / 233280
-  }
+  const viteEnvironment = (import.meta as ImportMeta & {
+    env?: { DEV?: boolean }
+  }).env
+  if (typeof viteEnvironment?.DEV === 'boolean') return viteEnvironment.DEV
+
+  return false
 }
 
-// Simple hash
-function hash(str: string): number {
-  let h = 0
-  for (let i = 0; i < str.length; i++) {
-    h = ((h << 5) - h + str.charCodeAt(i)) | 0
+function createPatternDataUrl(
+  payload: string,
+  patternSize: number,
+  intensity: number,
+): string | null {
+  if (typeof document === 'undefined') return null
+
+  const cacheKey = `${payload}\u0000${patternSize}\u0000${intensity}`
+  const cached = patternUrlCache.get(cacheKey)
+  if (cached) return cached
+
+  const canvas = document.createElement('canvas')
+  canvas.width = patternSize
+  canvas.height = patternSize
+
+  const context = canvas.getContext('2d')
+  if (!context) return null
+
+  const imageData = context.createImageData(patternSize, patternSize)
+  imageData.data.set(generatePatternRgba(payload, patternSize, intensity))
+  context.putImageData(imageData, 0, 0)
+  const dataUrl = canvas.toDataURL('image/png')
+  if (patternUrlCache.size >= MAX_CACHED_PATTERN_URLS) {
+    const oldestKey = patternUrlCache.keys().next().value
+    if (oldestKey !== undefined) patternUrlCache.delete(oldestKey)
   }
-  return h >>> 0
+  patternUrlCache.set(cacheKey, dataUrl)
+  return dataUrl
+}
+
+export interface DevTagProps {
+  /** Stable identifier used as one segment of the decoded component path. */
+  id: string
+  /** Human-readable category included in the pattern payload. */
+  type?: string
+  /**
+   * Source location embedded into the noise. Must match the registry entry
+   * used at decode time — the mapping is part of the pattern seed, not a
+   * side-channel lookup after path match.
+   */
+  source?: SourceLocation
+  children: ReactNode
+  /** CSS size of the repeating signal tile. Values are clamped to 16-256. */
+  patternSize?: number
+  /** Signal strength from 0-1. Practical screenshot values are 0.05-0.12. */
+  intensity?: number
+  /** Overrides environment detection. Useful for tests and explicit builds. */
+  enabled?: boolean
+  /** @deprecated Use `enabled={false}`. A true value always disables the tag. */
+  disabled?: boolean
+  /** Draws the tagged region border for inspection. */
+  debug?: boolean
+  /** Paints this tag's signal. Disable on a context-only root wrapper. */
+  signal?: boolean
+  className?: string
+  style?: CSSProperties
 }
 
 /**
- * Generate perceptually distinctive noise pattern
- *
- * Key: The pattern must have distinctive STRUCTURAL features that
- * survive interpolation, not exact pixel values.
- *
- * We create patterns with different spatial frequencies based on the hash.
+ * Tags a rectangular React region with a deterministic, screenshot-readable
+ * frequency pattern. The path, type, depth, and optional source location are
+ * hashed into the carrier. Nested tags automatically build hierarchical paths,
+ * each with its own embedded mapping.
  */
-function generatePerceptualPattern(
-  data: string,
-  width: number,
-  height: number,
-  intensity: number = 0.08
-): ImageData {
-  const canvas = document.createElement('canvas')
-  canvas.width = width
-  canvas.height = height
-  const ctx = canvas.getContext('2d')!
-
-  const imageData = ctx.createImageData(width, height)
-  const pixels = imageData.data
-
-  const seed = hash(data)
-  const rng = new SeededRandom(seed)
-
-  // Generate 3 different frequency components based on seed
-  const freq1 = 2 + (seed % 5)        // Low freq
-  const freq2 = 6 + ((seed >> 8) % 5) // Mid freq
-  const freq3 = 12 + ((seed >> 16) % 6) // High freq
-
-  const phase1 = rng.next() * Math.PI * 2
-  const phase2 = rng.next() * Math.PI * 2
-  const phase3 = rng.next() * Math.PI * 2
-
-  const amp1 = 0.4 + rng.next() * 0.3
-  const amp2 = 0.3 + rng.next() * 0.3
-  const amp3 = 0.3 + rng.next() * 0.2
-
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const idx = (y * width + x) * 4
-
-      // Combine multiple frequency components for distinctive pattern
-      const val1 = Math.sin((x / width) * freq1 * Math.PI * 2 + phase1) * amp1
-      const val2 = Math.sin((y / height) * freq2 * Math.PI * 2 + phase2) * amp2
-      const val3 = Math.sin((x / width + y / height) * freq3 * Math.PI * 2 + phase3) * amp3
-
-      const combined = (val1 + val2 + val3) / 3
-
-      // Apply as subtle variation
-      const variation = Math.floor(combined * intensity * 255)
-      const gray = 245 + variation // Light gray base
-
-      pixels[idx] = gray
-      pixels[idx + 1] = gray
-      pixels[idx + 2] = gray
-      pixels[idx + 3] = 15 // Very low alpha for subtlety
-    }
-  }
-
-  return imageData
-}
-
-interface DevTagProps {
-  id: string
-  type?: string
-  children: ReactNode
-  patternSize?: number
-  intensity?: number
-  disabled?: boolean
-}
-
 export function DevTag({
   id,
   type = 'component',
+  source,
   children,
-  patternSize = 64,
-  intensity = 0.08,
-  disabled = false
+  patternSize,
+  intensity,
+  enabled,
+  disabled = false,
+  debug,
+  signal = true,
+  className,
+  style,
 }: DevTagProps) {
-  const containerRef = useRef<HTMLDivElement>(null)
-  const parent = useContext(ComponentCtx)
-
-  const currentPath = [...parent.path, id]
-  const pathString = currentPath.join('/')
-
-  const isDev = process.env.NODE_ENV === 'development'
+  const parent = useContext(ComponentContext)
+  const currentPath = useMemo(() => [...parent.path, id], [parent.path, id])
+  const path = currentPath.join('/')
+  const depth = parent.depth + 1
+  const isRootTag = parent.path.length === 0
+  const requestedEnabled = disabled ? false : enabled
+  const isEnabled = isRootTag
+    ? (requestedEnabled ?? isDevelopmentBuild())
+    : parent.enabled && (requestedEnabled ?? true)
+  const safeSize = clampPatternSize(patternSize ?? parent.patternSize)
+  const safeIntensity = clampIntensity(intensity ?? parent.intensity)
+  const isDebug = debug ?? parent.debug
+  const payload = createPatternPayload({ path, type, depth, source })
+  const [patternUrl, setPatternUrl] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!isDev || disabled || !containerRef.current) return
-
-    const data = JSON.stringify({ p: pathString, t: type, d: parent.depth + 1 })
-
-    // Generate pattern
-    const imageData = generatePerceptualPattern(data, patternSize, patternSize, intensity)
-
-    // Convert to data URL
-    const canvas = document.createElement('canvas')
-    canvas.width = patternSize
-    canvas.height = patternSize
-    const ctx = canvas.getContext('2d')!
-    ctx.putImageData(imageData, 0, 0)
-    const dataUrl = canvas.toDataURL('image/png')
-
-    // Apply as repeating background
-    containerRef.current.style.backgroundImage = `url(${dataUrl})`
-    containerRef.current.style.backgroundRepeat = 'repeat'
-    containerRef.current.style.backgroundSize = `${patternSize}px ${patternSize}px`
-
-    return () => {
-      if (containerRef.current) {
-        containerRef.current.style.backgroundImage = ''
-      }
+    if (!isEnabled || !signal) {
+      setPatternUrl(null)
+      return
     }
-  }, [pathString, type, parent.depth, patternSize, intensity, isDev, disabled])
 
-  if (!isDev || disabled) {
-    return <>{children}</>
+    setPatternUrl(createPatternDataUrl(payload, safeSize, safeIntensity))
+  }, [isEnabled, payload, safeIntensity, safeSize, signal])
+
+  const contextValue = useMemo<ComponentContextValue>(
+    () => ({
+      path: currentPath,
+      depth,
+      enabled: isEnabled,
+      intensity: safeIntensity,
+      patternSize: safeSize,
+      debug: isDebug,
+    }),
+    [currentPath, depth, isDebug, isEnabled, safeIntensity, safeSize],
+  )
+
+  if (!isEnabled) {
+    return (
+      <ComponentContext.Provider value={contextValue}>
+        {className || style ? (
+          <div className={className} style={{ position: 'relative', ...style }}>
+            {children}
+          </div>
+        ) : children}
+      </ComponentContext.Provider>
+    )
   }
 
   return (
-    <ComponentCtx.Provider value={{ path: currentPath, depth: parent.depth + 1 }}>
+    <ComponentContext.Provider value={contextValue}>
       <div
-        ref={containerRef}
-        data-devtag-perceptual={id}
-        data-devtag-path={pathString}
-        style={{ position: 'relative' }}
+        className={className}
+        data-pixelprovenance-id={id}
+        data-pixelprovenance-path={path}
+        data-pixelprovenance-type={type}
+        data-pixelprovenance-source={
+          source ? `${source.file}:${source.line}:${source.column}` : undefined
+        }
+        style={{ position: 'relative', ...style }}
       >
+
         {children}
+        {signal && (
+          <span
+            aria-hidden="true"
+            data-pixelprovenance-signal=""
+            style={{
+              position: 'absolute',
+              inset: 0,
+              zIndex: 20 + depth,
+              pointerEvents: 'none',
+              border: isDebug ? '1px solid rgba(82, 101, 255, 0.85)' : 0,
+              backgroundImage: patternUrl ? `url(${patternUrl})` : undefined,
+              backgroundRepeat: 'repeat',
+              backgroundPosition: '0 0',
+              backgroundSize: `${safeSize}px ${safeSize}px`,
+            }}
+          />
+        )}
       </div>
-    </ComponentCtx.Provider>
+    </ComponentContext.Provider>
   )
+}
+
+export interface DevTagRootProps {
+  pageId: string
+  children: ReactNode
+  /** Optional source embedded in the root page signal when `signal` is on. */
+  source?: SourceLocation
+  intensity?: number
+  patternSize?: number
+  enabled?: boolean
+  debug?: boolean
+  signal?: boolean
+  className?: string
+  style?: CSSProperties
 }
 
 export function DevTagRoot({
   pageId,
   children,
-  intensity = 0.06
-}: {
-  pageId: string
-  children: ReactNode
-  intensity?: number
-}) {
+  source,
+  intensity = 0.06,
+  patternSize = 64,
+  enabled,
+  debug,
+  signal,
+  className,
+  style,
+}: DevTagRootProps) {
   return (
-    <DevTag id={pageId} type="page" intensity={intensity}>
+    <DevTag
+      id={pageId}
+      type="page"
+      source={source}
+      intensity={intensity}
+      patternSize={patternSize}
+      enabled={enabled}
+      debug={debug}
+      signal={signal}
+      className={className}
+      style={style}
+    >
       {children}
     </DevTag>
   )
 }
-
-export type { DevTagProps }

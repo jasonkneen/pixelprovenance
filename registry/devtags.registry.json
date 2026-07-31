@@ -1,9 +1,0 @@
-{
-  "BILLING_02": {
-    "route": "/settings/billing",
-    "entry": "src/app/settings/billing/page.tsx",
-    "owners": ["payments"],
-    "tests": ["billing.spec.ts"],
-    "storybook": "BillingPage"
-  }
-}

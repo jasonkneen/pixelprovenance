@@ -1,266 +1,633 @@
-/**
- * Perceptual Noise Decoder
- *
- * Extracts patterns that survive Retina 2x scaling by using
- * perceptual features (frequency, match) instead of exact pixels.
- */
+#!/usr/bin/env node
 
-import { readFileSync, existsSync } from 'fs'
+import { Buffer } from 'node:buffer'
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+
 import { PNG } from 'pngjs'
-import { fileURLToPath } from 'url'
 
-// PRNG matching encoder
-class SeededRandom {
-  private seed: number
+import {
+  DEFAULT_INTENSITY,
+  DEFAULT_PATTERN_SIZE,
+  HIERARCHY_SCORE_MARGIN,
+  comparePatterns,
+  createPatternPayload,
+  generatePattern,
+  rankByHierarchy,
+  resolvePatternSize,
+  type ComponentDescriptor,
+  type PatternMatrix,
+} from '../src/pattern.js'
 
-  constructor(seed: number) {
-    this.seed = seed
-  }
+const MAX_IMAGE_BYTES = 100 * 1024 * 1024
+const MAX_IMAGE_PIXELS = 25_000_000
+const MAX_REGISTRY_BYTES = 1024 * 1024
+const MAX_REGISTRY_ENTRIES = 512
+const MAX_SCALES = 4
+const MAX_PATTERN_SAMPLES = 4_000_000
+const MAX_CORRELATION_SAMPLES = 500_000_000
 
-  next(): number {
-    this.seed = (this.seed * 9301 + 49297) % 233280
-    return this.seed / 233280
-  }
+export interface RegistryEntry extends ComponentDescriptor {
+  pattern: PatternMatrix
 }
 
-function hash(str: string): number {
-  let h = 0
-  for (let i = 0; i < str.length; i++) {
-    h = ((h << 5) - h + str.charCodeAt(i)) | 0
-  }
-  return h >>> 0
+export interface ScanResult extends ComponentDescriptor {
+  score: number
+  count: number
+  tileSize: number
 }
 
-// Generate expected pattern (must match encoder exactly)
-function generatePattern(
-  data: string,
-  tileSize: number = 64,
-  intensity: number = 0.08
-): number[][] {
-  const seed = hash(data)
-  const rng = new SeededRandom(seed)
-
-  const freq1 = 2 + (seed % 5)
-  const freq2 = 6 + ((seed >> 8) % 5)
-  const freq3 = 12 + ((seed >> 16) % 6)
-
-  const phase1 = rng.next() * Math.PI * 2
-  const phase2 = rng.next() * Math.PI * 2
-  const phase3 = rng.next() * Math.PI * 2
-
-  const amp1 = 0.4 + rng.next() * 0.3
-  const amp2 = 0.3 + rng.next() * 0.3
-  const amp3 = 0.3 + rng.next() * 0.2
-
-  const pattern: number[][] = []
-
-  for (let y = 0; y < tileSize; y++) {
-    const row: number[] = []
-    for (let x = 0; x < tileSize; x++) {
-      const val1 = Math.sin((x / tileSize) * freq1 * Math.PI * 2 + phase1) * amp1
-      const val2 = Math.sin((y / tileSize) * freq2 * Math.PI * 2 + phase2) * amp2
-      const val3 = Math.sin((x / tileSize + y / tileSize) * freq3 * Math.PI * 2 + phase3) * amp3
-
-      const combined = (val1 + val2 + val3) / 3
-      const variation = combined * intensity * 255
-      const gray = 245 + variation
-
-      row.push(gray)
-    }
-    pattern.push(row)
-  }
-
-  return pattern
+export interface ScanOptions {
+  threshold?: number
+  step?: number
 }
 
-// Extract grayscale tile from image
-function extractTile(
-  data: Buffer,
+export interface DecodeOptions extends ScanOptions {
+  patternSize?: number
+  intensity?: number
+  scales?: number[]
+}
+
+function assertRaster(
+  data: Uint8Array,
   width: number,
+  height: number,
+): void {
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0) {
+    throw new RangeError('Image dimensions must be positive safe integers')
+  }
+
+  const pixelCount = width * height
+  if (pixelCount > MAX_IMAGE_PIXELS) {
+    throw new RangeError(`Image exceeds the ${MAX_IMAGE_PIXELS.toLocaleString()} pixel limit`)
+  }
+  if (data.length < pixelCount * 4) {
+    throw new RangeError('Pixel buffer is smaller than the declared image dimensions')
+  }
+}
+
+function readPng(pngBytes: Uint8Array): PNG {
+  const pngData = Buffer.from(
+    pngBytes.buffer,
+    pngBytes.byteOffset,
+    pngBytes.byteLength,
+  )
+  if (pngData.length > MAX_IMAGE_BYTES) {
+    throw new RangeError(`PNG exceeds the ${MAX_IMAGE_BYTES / 1024 / 1024} MB input limit`)
+  }
+
+  if (pngData.length >= 24 && pngData.subarray(12, 16).toString('ascii') === 'IHDR') {
+    const width = pngData.readUInt32BE(16)
+    const height = pngData.readUInt32BE(20)
+    if (width * height > MAX_IMAGE_PIXELS) {
+      throw new RangeError(`PNG exceeds the ${MAX_IMAGE_PIXELS.toLocaleString()} pixel limit`)
+    }
+    if (pngData.length >= 29 && pngData[28] !== 0) {
+      throw new RangeError('Interlaced PNG input is not supported')
+    }
+  }
+
+  const png = PNG.sync.read(pngData)
+  assertRaster(png.data, png.width, png.height)
+  return png
+}
+
+function assertComponents(components: ComponentDescriptor[]): void {
+  if (components.length > MAX_REGISTRY_ENTRIES) {
+    throw new RangeError(`Registry exceeds the ${MAX_REGISTRY_ENTRIES} component limit`)
+  }
+
+  const paths = new Set<string>()
+  for (const [index, component] of components.entries()) {
+    if (
+      typeof component.path !== 'string' ||
+      component.path.length === 0 ||
+      component.path.length > 512 ||
+      typeof component.type !== 'string' ||
+      component.type.length === 0 ||
+      component.type.length > 64 ||
+      !Number.isInteger(component.depth) ||
+      component.depth < 1 ||
+      component.depth > 255 ||
+      (component.source !== undefined &&
+        (typeof component.source !== 'object' ||
+          component.source === null ||
+          typeof component.source.file !== 'string' ||
+          component.source.file.length === 0 ||
+          component.source.file.length > 1024 ||
+          !Number.isInteger(component.source.line) ||
+          component.source.line < 1 ||
+          !Number.isInteger(component.source.column) ||
+          component.source.column < 1)) ||
+      (component.patternSize !== undefined &&
+        (!Number.isFinite(component.patternSize) ||
+          component.patternSize < 16 ||
+          component.patternSize > 256))
+    ) {
+      throw new TypeError(`Invalid component descriptor at registry index ${index}`)
+    }
+    if (paths.has(component.path)) {
+      throw new TypeError(`Duplicate component path: ${component.path}`)
+    }
+    paths.add(component.path)
+  }
+}
+
+function extractTiles(
+  data: Uint8Array,
+  width: number,
+  height: number,
   startX: number,
   startY: number,
-  tileSize: number
-): number[][] {
-  const tile: number[][] = []
+  tileSize: number,
+): { luma: PatternMatrix; chroma: PatternMatrix } {
+  const luma: PatternMatrix = []
+  const chroma: PatternMatrix = []
 
-  for (let y = 0; y < tileSize; y++) {
-    const row: number[] = []
-    for (let x = 0; x < tileSize; x++) {
-      const px = startX + x
-      const py = startY + y
-      if (px < width && py < width) { // Assuming square-ish
-        const idx = (py * width + px) * 4
-        const gray = (data[idx] + data[idx + 1] + data[idx + 2]) / 3
-        row.push(gray)
-      } else {
-        row.push(0)
+  for (let y = 0; y < tileSize; y += 1) {
+    const lumaRow: number[] = []
+    const chromaRow: number[] = []
+    for (let x = 0; x < tileSize; x += 1) {
+      const pixelX = startX + x
+      const pixelY = startY + y
+
+      if (pixelX >= width || pixelY >= height) {
+        lumaRow.push(0)
+        chromaRow.push(0)
+        continue
+      }
+
+      const offset = (pixelY * width + pixelX) * 4
+      const red = data[offset]
+      const green = data[offset + 1]
+      const blue = data[offset + 2]
+      lumaRow.push((red + green + blue) / 3)
+      chromaRow.push(red - (green + blue) / 2)
+    }
+    luma.push(lumaRow)
+    chroma.push(chromaRow)
+  }
+
+  return { luma, chroma }
+}
+
+export function buildRegistry(
+  components: ComponentDescriptor[],
+  patternSize = DEFAULT_PATTERN_SIZE,
+  intensity = DEFAULT_INTENSITY,
+): RegistryEntry[] {
+  assertComponents(components)
+  const sizes = components.map((component) =>
+    Math.min(512, Math.max(16, resolvePatternSize(component, patternSize))),
+  )
+  const sampleCount = sizes.reduce((total, size) => total + size * size, 0)
+  if (sampleCount > MAX_PATTERN_SAMPLES) {
+    throw new RangeError('Registry patterns exceed the decoder memory budget')
+  }
+  return components.map((component, index) => ({
+    ...component,
+    pattern: generatePattern(
+      createPatternPayload(component),
+      sizes[index],
+      intensity,
+    ),
+  }))
+}
+
+function groupRegistryByTileSize(
+  registry: RegistryEntry[],
+): Map<number, RegistryEntry[]> {
+  const groups = new Map<number, RegistryEntry[]>()
+  for (const entry of registry) {
+    const tileSize = entry.pattern.length
+    const batch = groups.get(tileSize)
+    if (batch) batch.push(entry)
+    else groups.set(tileSize, [entry])
+  }
+  return groups
+}
+
+function scanUniformTileSize(
+  data: Uint8Array,
+  width: number,
+  height: number,
+  registry: RegistryEntry[],
+  options: ScanOptions,
+): ScanResult[] {
+  const tileSize = registry[0]?.pattern.length ?? 0
+  if (tileSize === 0 || tileSize > 512 || width < tileSize || height < tileSize) {
+    return []
+  }
+
+  const requestedThreshold = options.threshold ?? 0.7
+  if (!Number.isFinite(requestedThreshold)) {
+    throw new RangeError('Scan threshold must be a finite number')
+  }
+  const threshold = Math.min(1, Math.max(-1, requestedThreshold))
+  const requestedStep = options.step ?? tileSize / 2
+  if (!Number.isFinite(requestedStep) || requestedStep <= 0) {
+    throw new RangeError('Scan step must be a positive finite number')
+  }
+  const step = Math.max(1, Math.round(requestedStep))
+  const horizontalPositions = Math.floor((width - tileSize) / step) + 1
+  const verticalPositions = Math.floor((height - tileSize) / step) + 1
+  const correlationSamples =
+    horizontalPositions *
+    verticalPositions *
+    registry.length *
+    tileSize *
+    tileSize
+  if (correlationSamples > MAX_CORRELATION_SAMPLES) {
+    throw new RangeError(
+      'Scan exceeds the decoder computation budget; increase step or narrow the registry',
+    )
+  }
+  const matches = new Map<string, ScanResult>()
+
+  for (let y = 0; y <= height - tileSize; y += step) {
+    for (let x = 0; x <= width - tileSize; x += step) {
+      const tiles = extractTiles(data, width, height, x, y, tileSize)
+
+      for (const entry of registry) {
+        if (entry.pattern.length !== tileSize) {
+          throw new TypeError('scanUniformTileSize requires a single tile size')
+        }
+        const score = Math.max(
+          comparePatterns(tiles.luma, entry.pattern),
+          comparePatterns(tiles.chroma, entry.pattern),
+        )
+        if (score < threshold) continue
+
+        const existing = matches.get(entry.path)
+        if (existing) {
+          existing.count += 1
+          existing.score = Math.max(existing.score, score)
+        } else {
+          matches.set(entry.path, {
+            path: entry.path,
+            type: entry.type,
+            depth: entry.depth,
+            source: entry.source,
+            score,
+            count: 1,
+            tileSize,
+          })
+        }
       }
     }
-    tile.push(row)
   }
 
-  return tile
+  return [...matches.values()]
 }
 
-// Compute match between two patterns (perceptual similarity)
-// Returns value between -1 and 1 (1 = perfect match)
-function compare(pattern1: number[][], pattern2: number[][]): number {
-  const size = Math.min(pattern1.length, pattern2.length)
+export function scanPixels(
+  data: Uint8Array,
+  width: number,
+  height: number,
+  registry: RegistryEntry[],
+  options: ScanOptions = {},
+): ScanResult[] {
+  if (registry.length === 0 || width <= 0 || height <= 0) return []
+  assertRaster(data, width, height)
+  if (registry.length > MAX_REGISTRY_ENTRIES) {
+    throw new RangeError(`Registry exceeds the ${MAX_REGISTRY_ENTRIES} component limit`)
+  }
 
-  let sum1 = 0, sum2 = 0, sumSq1 = 0, sumSq2 = 0, sumProd = 0
-  let count = 0
+  const threshold = options.threshold ?? 0.7
+  const matches = new Map<string, ScanResult>()
 
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const v1 = pattern1[y]?.[x] ?? 0
-      const v2 = pattern2[y]?.[x] ?? 0
-
-      sum1 += v1
-      sum2 += v2
-      sumSq1 += v1 * v1
-      sumSq2 += v2 * v2
-      sumProd += v1 * v2
-      count++
+  for (const batch of groupRegistryByTileSize(registry).values()) {
+    for (const result of scanUniformTileSize(data, width, height, batch, options)) {
+      const existing = matches.get(result.path)
+      if (
+        !existing ||
+        result.score > existing.score ||
+        (result.score === existing.score && result.count > existing.count)
+      ) {
+        matches.set(result.path, result)
+      }
     }
   }
 
-  const mean1 = sum1 / count
-  const mean2 = sum2 / count
-
-  const numerator = sumProd - count * mean1 * mean2
-  const denom1 = Math.sqrt(sumSq1 - count * mean1 * mean1)
-  const denom2 = Math.sqrt(sumSq2 - count * mean2 * mean2)
-
-  if (denom1 === 0 || denom2 === 0) return 0
-
-  return numerator / (denom1 * denom2)
-}
-
-// Build registry with expected patterns
-interface RegistryEntry {
-  path: string
-  type: string
-  depth: number
-  pattern: number[][]
-}
-
-function build(
-  components: Array<{ path: string; type: string; depth: number }>,
-  tileSize: number = 64,
-  intensity: number = 0.08
-): RegistryEntry[] {
-  return components.map(comp => {
-    const data = JSON.stringify({ p: comp.path, t: comp.type, d: comp.depth })
-    const pattern = generatePattern(data, tileSize, intensity)
-
-    return {
-      path: comp.path,
-      type: comp.type,
-      depth: comp.depth,
-      pattern
-    }
+  return rankByHierarchy([...matches.values()], {
+    threshold,
+    margin: HIERARCHY_SCORE_MARGIN,
   })
 }
 
-// Scan image and match patterns
-function scan(
-  pngData: Buffer,
+export function scanPng(
+  pngData: Uint8Array,
   registry: RegistryEntry[],
-  tileSize: number = 64,
-  threshold: number = 0.7 // Match threshold for match
-) {
-  const png = PNG.sync.read(pngData)
-  const { width, height, data } = png
+  options: ScanOptions = {},
+): ScanResult[] {
+  const png = readPng(pngData)
+  return scanPixels(png.data, png.width, png.height, registry, options)
+}
 
-  const matches = new Map<string, { path: string; type: string; score: number; count: number }>()
+/** @deprecated Use `buildRegistry`. */
+export const build = buildRegistry
 
-  // Sample grid - check every 32 pixels
-  const step = 32
+/** @deprecated Use `scanPng` with a ScanOptions object. */
+export function scan(
+  pngData: Uint8Array,
+  registry: RegistryEntry[],
+  tileSize = DEFAULT_PATTERN_SIZE,
+  threshold = 0.7,
+): ScanResult[] {
+  return scanPng(pngData, registry, {
+    threshold,
+    step: Math.max(1, Math.round(tileSize / 2)),
+  })
+}
 
-  for (let y = 0; y < height - tileSize; y += step) {
-    for (let x = 0; x < width - tileSize; x += step) {
-      const tile = extractTile(data, width, x, y, tileSize)
+export { generatePattern }
 
-      // Match against all registered patterns
-      for (const entry of registry) {
-        const score = compare(tile, entry.pattern)
+export function decodePng(
+  pngData: Uint8Array,
+  components: ComponentDescriptor[],
+  options: DecodeOptions = {},
+): ScanResult[] {
+  const baseSize = options.patternSize ?? DEFAULT_PATTERN_SIZE
+  const intensity = options.intensity ?? DEFAULT_INTENSITY
+  const scales = options.scales?.length ? options.scales : [1, 2]
+  const merged = new Map<string, ScanResult>()
 
-        if (score > threshold) {
-          const key = entry.path
-          if (matches.has(key)) {
-            const existing = matches.get(key)!
-            existing.count++
-            existing.score = Math.max(existing.score, score)
-          } else {
-            matches.set(key, {
-              path: entry.path,
-              type: entry.type,
-              score: score,
-              count: 1
-            })
+  assertComponents(components)
+  if (scales.length > MAX_SCALES) {
+    throw new RangeError(`At most ${MAX_SCALES} screenshot scales can be checked at once`)
+  }
+
+  const png = readPng(pngData)
+
+  let totalCorrelationSamples = 0
+  for (const scale of scales) {
+    if (!Number.isFinite(scale) || scale < 0.25 || scale > 2) {
+      throw new RangeError('Screenshot scales must be between 0.25 and 2')
+    }
+    for (const component of components) {
+      const componentBase = resolvePatternSize(component, baseSize)
+      const tileSize = Math.round(componentBase * scale)
+      if (tileSize < 16 || tileSize > 512 || png.width < tileSize || png.height < tileSize) {
+        continue
+      }
+      const requestedStep = options.step ? options.step * scale : tileSize / 2
+      if (!Number.isFinite(requestedStep) || requestedStep <= 0) {
+        throw new RangeError('Scan step must be a positive finite number')
+      }
+      const step = Math.max(1, Math.round(requestedStep))
+      const horizontalPositions = Math.floor((png.width - tileSize) / step) + 1
+      const verticalPositions = Math.floor((png.height - tileSize) / step) + 1
+      totalCorrelationSamples +=
+        horizontalPositions * verticalPositions * tileSize * tileSize
+    }
+  }
+  if (totalCorrelationSamples > MAX_CORRELATION_SAMPLES) {
+    throw new RangeError(
+      'Scan exceeds the decoder computation budget; increase step, reduce scales, or narrow the registry',
+    )
+  }
+
+  for (const scale of scales) {
+    // Group by effective 1× size so mixed hierarchy tiles stay uniform per batch.
+    const byBaseSize = new Map<number, ComponentDescriptor[]>()
+    for (const component of components) {
+      const componentBase = resolvePatternSize(component, baseSize)
+      const batch = byBaseSize.get(componentBase)
+      if (batch) batch.push(component)
+      else byBaseSize.set(componentBase, [component])
+    }
+
+    for (const [componentBase, batchComponents] of byBaseSize) {
+      const tileSize = Math.round(componentBase * scale)
+      if (tileSize < 16 || tileSize > 512 || png.width < tileSize || png.height < tileSize) {
+        continue
+      }
+      const batchSize = Math.max(
+        1,
+        Math.floor(MAX_PATTERN_SAMPLES / (tileSize * tileSize)),
+      )
+
+      for (let start = 0; start < batchComponents.length; start += batchSize) {
+        // Force this scale's tile size for the batch (overrides per-entry 1× size).
+        const registry = buildRegistry(
+          batchComponents.slice(start, start + batchSize).map((component) => ({
+            ...component,
+            patternSize: tileSize,
+          })),
+          tileSize,
+          intensity,
+        )
+        const results = scanPixels(png.data, png.width, png.height, registry, {
+          threshold: options.threshold,
+          step: options.step ? Math.round(options.step * scale) : undefined,
+        })
+
+        for (const result of results) {
+          const existing = merged.get(result.path)
+          if (
+            !existing ||
+            result.score > existing.score ||
+            (result.score === existing.score && result.count > existing.count) ||
+            (result.score === existing.score &&
+              result.count === existing.count &&
+              result.tileSize < existing.tileSize)
+          ) {
+            merged.set(result.path, result)
           }
         }
       }
     }
   }
 
-  // Sort by count (coverage area) then score
-  return Array.from(matches.values()).sort((a, b) => {
-    if (b.count !== a.count) return b.count - a.count
-    return b.score - a.score
+  return rankByHierarchy([...merged.values()], {
+    threshold: options.threshold ?? 0.7,
+    margin: HIERARCHY_SCORE_MARGIN,
   })
 }
 
-// CLI
-const isMain = process.argv[1] === fileURLToPath(import.meta.url)
+function readComponents(registryPath: string): ComponentDescriptor[] {
+  if (statSync(registryPath).size > MAX_REGISTRY_BYTES) {
+    throw new RangeError(`Registry exceeds the ${MAX_REGISTRY_BYTES / 1024} KB input limit`)
+  }
+  const parsed: unknown = JSON.parse(readFileSync(registryPath, 'utf8'))
+  const components = Array.isArray(parsed)
+    ? parsed
+    : typeof parsed === 'object' && parsed !== null && 'components' in parsed
+      ? (parsed as { components: unknown }).components
+      : null
 
-if (isMain) {
-  const args = process.argv.slice(2)
-  const imagePath = args[0]
-
-  if (!imagePath) {
-    console.error('Usage: decode.ts <image.png>')
-    process.exit(1)
+  if (!Array.isArray(components)) {
+    throw new Error('Registry must be an array or an object with a components array')
   }
 
-  if (!existsSync(imagePath)) {
-    console.error(`File not found: ${imagePath}`)
-    process.exit(1)
-  }
+  const descriptors = components.map((component, index) => {
+    if (
+      typeof component !== 'object' ||
+      component === null ||
+      !('path' in component) ||
+      !('type' in component) ||
+      !('depth' in component) ||
+      typeof component.path !== 'string' ||
+      typeof component.type !== 'string' ||
+      typeof component.depth !== 'number'
+    ) {
+      throw new Error(`Invalid component at registry index ${index}`)
+    }
 
-  // Expected components
-  const components = [
-    { path: 'BILLING_PAGE', type: 'page', depth: 1 },
-    { path: 'BILLING_PAGE/metadata-panel', type: 'panel', depth: 2 },
-    { path: 'BILLING_PAGE/actions-panel', type: 'panel', depth: 2 },
-    { path: 'BILLING_PAGE/actions-panel/save-btn', type: 'button', depth: 3 },
-    { path: 'BILLING_PAGE/actions-panel/cancel-btn', type: 'button', depth: 3 },
-    { path: 'BILLING_PAGE/actions-panel/delete-btn', type: 'button', depth: 3 },
-    { path: 'BILLING_PAGE/decode-panel', type: 'panel', depth: 2 },
-  ]
+    const sourceValue = 'source' in component ? component.source : undefined
+    const source = sourceValue === undefined
+      ? undefined
+      : typeof sourceValue === 'object' &&
+          sourceValue !== null &&
+          'file' in sourceValue &&
+          'line' in sourceValue &&
+          'column' in sourceValue &&
+          typeof sourceValue.file === 'string' &&
+          typeof sourceValue.line === 'number' &&
+          typeof sourceValue.column === 'number'
+        ? {
+            file: sourceValue.file,
+            line: sourceValue.line,
+            column: sourceValue.column,
+          }
+        : null
 
-  console.log('Building perceptual pattern registry...')
-  const registry = build(components, 64, 0.15) // Match component intensity
-  console.log(`Registry: ${registry.length} patterns\n`)
+    if (source === null) {
+      throw new Error(`Invalid source mapping at registry index ${index}`)
+    }
 
-  console.log('Scanning image...')
-  const pngData = readFileSync(imagePath)
-  const results = scan(pngData, registry, 64, 0.15) // Lower threshold
+    const patternSizeValue =
+      'patternSize' in component ? component.patternSize : undefined
+    const patternSize =
+      patternSizeValue === undefined
+        ? undefined
+        : typeof patternSizeValue === 'number' &&
+            Number.isFinite(patternSizeValue)
+          ? patternSizeValue
+          : null
 
-  if (results.length === 0) {
-    console.log('\nNo components detected')
-    process.exit(1)
-  }
+    if (patternSize === null) {
+      throw new Error(`Invalid patternSize at registry index ${index}`)
+    }
 
-  console.log(`\n=== Found ${results.length} components ===\n`)
+    return {
+      path: component.path,
+      type: component.type,
+      depth: component.depth,
+      source,
+      patternSize,
+    }
+  })
 
-  for (const r of results) {
-    const coverage = r.count > 20 ? 'high' : r.count > 10 ? 'medium' : 'low'
-    const confidence = (r.score * 100).toFixed(1)
-    console.log(`✓ ${r.path.padEnd(50)} (${r.type}, ${confidence}%, ${coverage})`)
-  }
-
-  console.log('')
+  assertComponents(descriptors)
+  return descriptors
 }
 
-export { build, scan, generatePattern }
+interface CliOptions {
+  imagePath: string
+  registryPath: string
+  threshold?: number
+  patternSize?: number
+  intensity?: number
+  scales?: number[]
+}
+
+function readFlag(args: string[], flag: string): string | undefined {
+  const index = args.indexOf(flag)
+  return index >= 0 ? args[index + 1] : undefined
+}
+
+function parseNumber(value: string | undefined, flag: string): number | undefined {
+  if (value === undefined) return undefined
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) throw new Error(`${flag} must be a finite number`)
+  return parsed
+}
+
+function parseCli(args: string[]): CliOptions {
+  const valueFlags = new Set([
+    '--registry',
+    '--threshold',
+    '--pattern-size',
+    '--intensity',
+    '--scale',
+  ])
+  const positional: string[] = []
+
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index]
+    if (!argument.startsWith('--')) {
+      positional.push(argument)
+      continue
+    }
+    if (!valueFlags.has(argument)) throw new Error(`Unknown option: ${argument}`)
+    const value = args[index + 1]
+    if (!value || value.startsWith('--')) throw new Error(`Missing value for ${argument}`)
+    index += 1
+  }
+
+  const imagePath = positional.length === 1 ? positional[0] : undefined
+  const registryPath = readFlag(args, '--registry')
+
+  if (!imagePath || !registryPath) {
+    throw new Error(
+      'Usage: pixelprovenance-decode <image.png> --registry <components.json> [--threshold 0.7] [--pattern-size 64] [--intensity 0.12] [--scale auto|1|2]',
+    )
+  }
+
+  const scaleValue = readFlag(args, '--scale')
+  const scales = !scaleValue || scaleValue === 'auto'
+    ? [1, 2]
+    : [parseNumber(scaleValue, '--scale') as number]
+
+  return {
+    imagePath,
+    registryPath,
+    threshold: parseNumber(readFlag(args, '--threshold'), '--threshold'),
+    patternSize: parseNumber(readFlag(args, '--pattern-size'), '--pattern-size'),
+    intensity: parseNumber(readFlag(args, '--intensity'), '--intensity'),
+    scales,
+  }
+}
+
+function runCli(args: string[]): number {
+  try {
+    const options = parseCli(args)
+    if (!existsSync(options.imagePath)) throw new Error(`Image not found: ${options.imagePath}`)
+    if (!existsSync(options.registryPath)) throw new Error(`Registry not found: ${options.registryPath}`)
+    if (statSync(options.imagePath).size > MAX_IMAGE_BYTES) {
+      throw new Error(`PNG exceeds the ${MAX_IMAGE_BYTES / 1024 / 1024} MB input limit`)
+    }
+
+    const components = readComponents(options.registryPath)
+    const results = decodePng(readFileSync(options.imagePath), components, options)
+
+    if (results.length === 0) {
+      console.log('No matching PixelProvenance signals found.')
+      return 1
+    }
+
+    console.log(`Found ${results.length} component signal${results.length === 1 ? '' : 's'}:`)
+    for (const result of results) {
+      const source = result.source
+        ? ` -> ${result.source.file}:${result.source.line}:${result.source.column}`
+        : ''
+      console.log(
+        `  ${result.path} (${result.type}, ${(result.score * 100).toFixed(1)}% match, ${result.tileSize}px tile)${source}`,
+      )
+    }
+    return 0
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error))
+    return 1
+  }
+}
+
+const entryPath = process.argv[1]
+if (
+  entryPath &&
+  existsSync(entryPath) &&
+  realpathSync(fileURLToPath(import.meta.url)) === realpathSync(entryPath)
+) {
+  process.exitCode = runCli(process.argv.slice(2))
+}

@@ -1,5 +1,7 @@
 # PixelProvenance: Making Screenshots Executable
 
+> Archived research draft: this post describes the original auto-instrumentation prototype and reported experiment, not the current manual-tagging package API. See the repository README for current usage and verified limitations.
+
 ## The Problem
 
 You're debugging a web app. A screenshot arrives on Slack: "The submit button is broken."

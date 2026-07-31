@@ -7,8 +7,9 @@
     "noEmit": false,
     "rootDir": ".",
     "allowImportingTsExtensions": false,
-    "moduleResolution": "node"
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext"
   },
-  "include": ["src/**/*", "decoder/decode.ts"],
-  "exclude": ["src/demo.tsx", "node_modules", "dist"]
+  "include": ["src/DevTag.tsx", "src/index.ts", "src/pattern.ts", "decoder/decode.ts"],
+  "exclude": ["**/*.test.ts", "**/*.test.tsx", "src/demo.tsx", "node_modules", "dist"]
 }

@@ -1,3 +1,5 @@
+[ARCHIVED RESEARCH DRAFT — current API and limitations are in README.md]
+
 I just published PixelProvenance - a system that lets you screenshot any part of your web app and instantly know which component and source file it came from.
 
 The problem: You get a bug screenshot on Slack. "The submit button is broken." Which submit button? Where in the code? You guess, search, waste time.

@@ -1,3 +1,10 @@
 /dist
+/demo-dist
 /.playwright-mcp
 /node_modules
+/.agent-browser
+/*.tgz
+paper/*.aux
+paper/*.log
+paper/*.out
+paper/*.pdf

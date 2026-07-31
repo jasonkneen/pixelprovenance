@@ -1,5 +1,7 @@
 # PixelProvenance - ArXiv Paper
 
+> Archive note: the paper describes the original auto-instrumentation prototype and its reported evaluation. The current package uses explicit manual tags and a registry; see the root README for its API and currently verified behavior.
+
 Academic paper describing the frequency-domain perceptual encoding approach.
 
 ## Files
@@ -41,4 +43,4 @@ Or use Overleaf (upload .tex file, compiles in browser).
 
 Ready for arXiv submission at https://arxiv.org/submit
 
-The paper accurately describes the implementation in `/Users/jkneen/Documents/GitHub/morrow/`.
+The paper describes the original research implementation. It is not the API reference for the current package.

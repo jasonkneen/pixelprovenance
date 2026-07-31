@@ -1,68 +1,64 @@
 {
   "name": "pixelprovenance",
-  "version": "0.1.0",
-  "description": "Component identification from screenshots via frequency-domain encoding",
+  "version": "0.2.0",
+  "description": "Experimental component identification for React screenshots using deterministic frequency patterns",
   "type": "module",
-  "main": "./dist/index.js",
-  "module": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "main": "./dist/src/index.js",
+  "module": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/src/index.d.ts",
       "import": "./dist/src/index.js"
-    },
-    "./auto": {
-      "types": "./dist/src/auto/index.d.ts",
-      "import": "./dist/src/auto/index.js"
-    },
-    "./plugin": {
-      "types": "./dist/src/plugin/index.d.ts",
-      "import": "./dist/src/plugin/index.js"
-    },
-    "./plugin/source-map": {
-      "types": "./dist/src/plugin/source-map-plugin.d.ts",
-      "import": "./dist/src/plugin/source-map-plugin.js"
     },
     "./decode": {
       "types": "./dist/decoder/decode.d.ts",
       "import": "./dist/decoder/decode.js"
     }
   },
+  "bin": {
+    "pixelprovenance-decode": "dist/decoder/decode.js"
+  },
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
-    "build:lib": "tsc --project tsconfig.lib.json",
+    "clean:lib": "node --eval \"import('node:fs').then(({ rmSync }) => rmSync('dist', { recursive: true, force: true }))\"",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "verify:package": "node scripts/verify-package.mjs",
+    "build": "npm run build:lib && npm run build:demo",
+    "build:demo": "npm run typecheck && vite build",
+    "build:lib": "npm run clean:lib && tsc --project tsconfig.lib.json",
     "preview": "vite preview",
     "decode": "tsx decoder/decode.ts",
-    "prepublishOnly": "npm run build:lib"
+    "check": "npm run typecheck && npm test && npm run build && npm run verify:package",
+    "prepare": "npm run build:lib",
+    "prepublishOnly": "npm run test && npm run build:lib"
   },
   "dependencies": {
-    "qrcode": "^1.5.4"
+    "pngjs": "^7.0.0"
   },
   "peerDependencies": {
-    "react": "^18.0.0",
-    "react-dom": "^18.0.0"
+    "react": "^18.0.0 || ^19.0.0",
+    "react-dom": "^18.0.0 || ^19.0.0"
   },
   "devDependencies": {
-    "@babel/parser": "^7.28.6",
-    "@babel/traverse": "^7.28.6",
-    "@types/babel__parser": "^7.0.0",
-    "@types/babel__traverse": "^7.28.0",
-    "@types/node": "^20.10.0",
-    "@types/pngjs": "^6.0.4",
-    "@types/qrcode": "^1.5.6",
-    "@types/react": "^18.2.0",
-    "@types/react-dom": "^18.2.0",
-    "@vitejs/plugin-react": "^4.2.0",
-    "jsqr": "^1.4.0",
-    "pngjs": "^7.0.0",
-    "tsx": "^4.7.0",
-    "typescript": "^5.3.0",
-    "vite": "^5.0.0"
+    "@types/node": "^26.1.2",
+    "@types/pngjs": "^6.0.5",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.0.5",
+    "html-to-image": "^1.11.13",
+    "jsdom": "^27.4.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "tsx": "^4.23.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.0",
+    "vitest": "^4.1.10"
   },
   "files": [
     "dist",
-    "decoder",
     "registry"
   ],
   "keywords": [
@@ -71,5 +67,17 @@
     "debugging",
     "component-tagging",
     "steganography"
-  ]
+  ],
+  "license": "CC-BY-NC-4.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jasonkneen/pixelprovenance.git"
+  },
+  "homepage": "https://github.com/jasonkneen/pixelprovenance#readme",
+  "bugs": {
+    "url": "https://github.com/jasonkneen/pixelprovenance/issues"
+  },
+  "engines": {
+    "node": ">=20.19.0"
+  }
 }
