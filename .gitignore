@@ -8,3 +8,6 @@ paper/*.aux
 paper/*.log
 paper/*.out
 paper/*.pdf
+
+# Local Netlify folder
+.netlify
