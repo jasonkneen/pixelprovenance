@@ -21,6 +21,8 @@ import type { ComponentDescriptor } from './pattern.js'
 const SIGNAL_INTENSITY = 0.08
 const MATCH_THRESHOLD = 0.42
 const LEAF_PATTERN_SIZE = 32
+/** Minimum crop edge so one full signal tile (64px) fits with a little slack. */
+const MIN_SELECTION_PX = 72
 const MAX_CAPTURE_PIXELS = 8_000_000
 
 /**
@@ -417,13 +419,52 @@ export default function App() {
     }
   }
 
+  function selectionMeetsMinimum(area: SelectionRect): boolean {
+    return area.width >= MIN_SELECTION_PX && area.height >= MIN_SELECTION_PX
+  }
+
+  /** Grow a short drag out to the minimum tile, centered on the drawn box. */
+  function snapSelectionToMinimum(
+    area: SelectionRect,
+    bounds: { width: number; height: number },
+  ): { area: SelectionRect; snapped: boolean } {
+    if (selectionMeetsMinimum(area)) return { area, snapped: false }
+
+    const width = Math.min(
+      Math.max(area.width, MIN_SELECTION_PX),
+      bounds.width,
+    )
+    const height = Math.min(
+      Math.max(area.height, MIN_SELECTION_PX),
+      bounds.height,
+    )
+    const centerX = area.x + area.width / 2
+    const centerY = area.y + area.height / 2
+    const x = Math.max(0, Math.min(bounds.width - width, centerX - width / 2))
+    const y = Math.max(0, Math.min(bounds.height - height, centerY - height / 2))
+
+    return {
+      area: { x, y, width, height },
+      snapped: true,
+    }
+  }
+
+  function selectionSizeLabel(area: SelectionRect): string {
+    const w = Math.round(area.width)
+    const h = Math.round(area.height)
+    if (selectionMeetsMinimum(area)) return `${w} × ${h} · ready`
+    return `${w} × ${h} · need ${MIN_SELECTION_PX}×${MIN_SELECTION_PX}`
+  }
+
   function handleSelectionStart(event: ReactPointerEvent<HTMLDivElement>) {
     if (analysisState === 'capturing') return
     const point = pointInSample(event)
     event.currentTarget.setPointerCapture(event.pointerId)
     selectionStartRef.current = point
     setSelection({ x: point.x, y: point.y, width: 0, height: 0 })
-    setSelectionMessage('')
+    setSelectionMessage(
+      `Drag to at least ${MIN_SELECTION_PX} × ${MIN_SELECTION_PX}px (one signal tile). Short drags snap up on release.`,
+    )
     setSelectionLabel('')
     setFocusedPath('')
     setIsSelecting(true)
@@ -432,7 +473,13 @@ export default function App() {
   function handleSelectionMove(event: ReactPointerEvent<HTMLDivElement>) {
     const start = selectionStartRef.current
     if (!isSelecting || !start) return
-    setSelection(normalizedSelection(start, pointInSample(event)))
+    const area = normalizedSelection(start, pointInSample(event))
+    setSelection(area)
+    setSelectionMessage(
+      selectionMeetsMinimum(area)
+        ? `${Math.round(area.width)} × ${Math.round(area.height)}px — release to capture`
+        : `${Math.round(area.width)} × ${Math.round(area.height)}px — too small (min ${MIN_SELECTION_PX}×${MIN_SELECTION_PX}, will snap)`,
+    )
   }
 
   async function prepareInPageCapture(area: SelectionRect) {
@@ -490,14 +537,32 @@ export default function App() {
   function handleSelectionEnd(event: ReactPointerEvent<HTMLDivElement>) {
     const start = selectionStartRef.current
     if (!start) return
-    const area = normalizedSelection(start, pointInSample(event))
+    const raw = normalizedSelection(start, pointInSample(event))
     selectionStartRef.current = null
     setIsSelecting(false)
+
+    const host = sampleHostRef.current
+    const bounds = host
+      ? { width: host.clientWidth, height: host.clientHeight }
+      : { width: raw.width, height: raw.height }
+    const { area, snapped } = snapSelectionToMinimum(raw, bounds)
     setSelection(area)
 
-    if (area.width < 72 || area.height < 72) {
-      setSelectionMessage('Make the selection at least 72 × 72 pixels so it contains one signal tile.')
+    if (!selectionMeetsMinimum(area)) {
+      setSelectionMessage(
+        `Need a ${MIN_SELECTION_PX} × ${MIN_SELECTION_PX} region — the sample surface is too small in one dimension.`,
+      )
       return
+    }
+
+    if (snapped) {
+      setSelectionMessage(
+        `Snapped to ${Math.round(area.width)} × ${Math.round(area.height)}px (minimum ${MIN_SELECTION_PX}×${MIN_SELECTION_PX}). Capturing…`,
+      )
+    } else {
+      setSelectionMessage(
+        `${Math.round(area.width)} × ${Math.round(area.height)}px — capturing…`,
+      )
     }
 
     void prepareInPageCapture(area)
@@ -641,8 +706,8 @@ export default function App() {
             <strong>Press, drag, release</strong>
             <small>
               {captureRound === 1
-                ? 'Aim for the blue outline'
-                : 'Aim for a task pill · 72 × 72 is enough'}
+                ? `Aim for the blue outline · min ${MIN_SELECTION_PX}×${MIN_SELECTION_PX}`
+                : `Aim for a task pill · min ${MIN_SELECTION_PX}×${MIN_SELECTION_PX} (snaps if short)`}
             </small>
           </div>
           <label className="bounds-toggle">
@@ -860,6 +925,12 @@ export default function App() {
                 <div
                   className="selection-rect"
                   data-source-focus={focusedPath ? 'true' : 'false'}
+                  data-too-small={
+                    !focusedPath && !selectionMeetsMinimum(selection)
+                      ? 'true'
+                      : 'false'
+                  }
+                  data-snapping={isSelecting ? 'false' : undefined}
                   style={{
                     left: selection.x,
                     top: selection.y,
@@ -868,8 +939,7 @@ export default function App() {
                   }}
                 >
                   <span>
-                    {selectionLabel ||
-                      `${Math.round(selection.width)} × ${Math.round(selection.height)}`}
+                    {selectionLabel || selectionSizeLabel(selection)}
                   </span>
                 </div>
               )}
@@ -880,8 +950,21 @@ export default function App() {
           </div>
         </div>
 
-        <div className="capture-status" aria-live="polite">
-          {selectionMessage || 'Draw directly over the app; the selected pixels will become a draggable capture.'}
+        <div
+          className="capture-status"
+          data-tone={
+            selection && isSelecting && !selectionMeetsMinimum(selection)
+              ? 'warn'
+              : selectionMessage.includes('Snapped')
+                ? 'snap'
+                : selectionMessage.includes('too small')
+                  ? 'warn'
+                  : 'idle'
+          }
+          aria-live="polite"
+        >
+          {selectionMessage ||
+            `Draw at least ${MIN_SELECTION_PX} × ${MIN_SELECTION_PX}px. Smaller boxes snap up to that size on release.`}
         </div>
       </section>
 
@@ -1004,7 +1087,11 @@ export default function App() {
             {analysisState === 'no-match' && (
               <div className="empty-result error-result">
                 <span>No confident match</span>
-                <p>Try another rectangle containing at least 72 × 72 pixels from one encoded panel.</p>
+                <p>
+                  Try another rectangle of at least {MIN_SELECTION_PX} ×{' '}
+                  {MIN_SELECTION_PX} pixels over an encoded region (short draws
+                  snap to the minimum).
+                </p>
                 <button type="button" className="retry-button" onClick={trySmallerCapture}>Try another crop</button>
               </div>
             )}
