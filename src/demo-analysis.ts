@@ -33,6 +33,15 @@ const ROBUST_BLOCKS_PER_AXIS = 8
 const ROBUST_EDGE_RANGE = 12
 const ROBUST_TRIM_RATIO = 0.2
 const MIN_ROBUST_BLOCKS = 8
+const MAX_ANALYSIS_SAMPLES = 500_000_000
+
+function patchSampleCount(tileSize: number): number {
+  const stride = Math.max(1, Math.floor(tileSize / 16))
+  const blockSize = Math.max(2, Math.floor(tileSize / ROBUST_BLOCKS_PER_AXIS))
+  const blockStride = Math.max(1, Math.floor(blockSize / 4))
+  return Math.ceil(tileSize / stride) ** 2 +
+    Math.floor(tileSize / blockSize) ** 2 * Math.ceil(blockSize / blockStride) ** 2
+}
 
 function correlationFromMoments(
   observedSum: number,
@@ -88,7 +97,7 @@ function compareRobustChromaPatch(
       for (let y = blockY; y < blockY + blockSize; y += sampleStride) {
         for (let x = blockX; x < blockX + blockSize; x += sampleStride) {
           const offset = ((startY + y) * width + startX + x) * 4
-          const observed =
+          const observed = data[offset + 3] === 0 ? 0 :
             data[offset] - (data[offset + 1] + data[offset + 2]) / 2
           const expectedValue = expected[y][x]
           observedSum += observed
@@ -148,9 +157,11 @@ function comparePatch(
   for (let y = 0; y < tileSize; y += sampleStride) {
     for (let x = 0; x < tileSize; x += sampleStride) {
       const offset = ((startY + y) * width + startX + x) * 4
-      const red = data[offset]
-      const green = data[offset + 1]
-      const blue = data[offset + 2]
+      // Stored RGB under zero alpha is not visible screenshot evidence.
+      const visible = data[offset + 3] === 0 ? 0 : 1
+      const red = data[offset] * visible
+      const green = data[offset + 1] * visible
+      const blue = data[offset + 2] * visible
       const observedLuma = (red + green + blue) / 3
       const observedChroma = red - (green + blue) / 2
       const expectedValue = expected[y][x]
@@ -203,10 +214,50 @@ export function analyzeScreenshot(
   ) {
     throw new RangeError('Screenshot pixels do not match the declared dimensions')
   }
+  if (width * height > 8_000_000) {
+    throw new RangeError('That capture is too large. Crop one app panel and try again.')
+  }
+  if (options.step !== undefined && (!Number.isFinite(options.step) || options.step <= 0)) {
+    throw new RangeError('Analysis step must be a positive finite number')
+  }
+  if (options.threshold !== undefined && !Number.isFinite(options.threshold)) {
+    throw new RangeError('Analysis threshold must be finite')
+  }
+  if (options.hierarchyMargin !== undefined &&
+      (!Number.isFinite(options.hierarchyMargin) || options.hierarchyMargin < 0)) {
+    throw new RangeError('Hierarchy margin must be finite and nonnegative')
+  }
 
   const fallbackSize = options.patternSize ?? DEFAULT_PATTERN_SIZE
   const intensity = options.intensity ?? DEFAULT_INTENSITY
   const scales = options.scales?.length ? options.scales : [1, 2]
+  if (components.length > 512 || scales.length > 4) {
+    throw new RangeError('Analysis supports at most 512 components and 4 scales')
+  }
+  for (const scale of scales) {
+    if (!Number.isFinite(scale) || scale < 0.25 || scale > 2) {
+      throw new RangeError('Screenshot scales must be between 0.25 and 2')
+    }
+  }
+  // Include both the coarse search and the maximum local refinement area.
+  // Preflight all entries so no component starts scanning before the total is known.
+  let sampleCount = 0
+  for (const component of components) {
+    for (const scale of scales) {
+      const tileSize = Math.round(resolvePatternSize(component, fallbackSize) * scale)
+      if (tileSize < 16 || tileSize > 512 || tileSize > width || tileSize > height) continue
+      const step = Math.max(1, Math.round(options.step ?? tileSize / 8))
+      const positionsX = width - tileSize + 1
+      const positionsY = height - tileSize + 1
+      const coarse = (Math.floor((positionsX - 1) / step) + 1) *
+        (Math.floor((positionsY - 1) / step) + 1)
+      const refinement = Math.min(positionsX, 2 * step + 1) * Math.min(positionsY, 2 * step + 1)
+      sampleCount += (coarse + refinement) * patchSampleCount(tileSize)
+    }
+  }
+  if (sampleCount > MAX_ANALYSIS_SAMPLES) {
+    throw new RangeError('Analysis exceeds the computation budget. Crop a smaller region or increase step.')
+  }
   const matches: ScreenshotMatch[] = []
 
   for (const component of components) {
@@ -224,7 +275,7 @@ export function analyzeScreenshot(
       if (
         !Number.isFinite(scale) ||
         tileSize < 16 ||
-        tileSize > 256 ||
+        tileSize > 512 ||
         tileSize > width ||
         tileSize > height
       ) {

@@ -29,6 +29,75 @@ const DECOY: ComponentDescriptor = {
   },
 }
 
+describe('browser analysis limits', () => {
+  it('recovers a heading from a tight crop with an overlapping parent signal', () => {
+    const parent = { path: 'MORROW_DASHBOARD/sprint-overview', type: 'project-card', depth: 2,
+      source: { file: 'src/features/dashboard/SprintOverview.tsx', line: 41, column: 5 } }
+    const heading = { path: parent.path + '/title', type: 'heading', depth: 3, patternSize: 32,
+      source: { ...parent.source, line: 45, column: 9 } }
+    const parentTile = generatePatternRgba(createPatternPayload(parent), 64, 0.08)
+    const titleTile = generatePatternRgba(createPatternPayload(heading), 32, 0.08)
+    const width = 64, height = 48
+    const data = new Uint8ClampedArray(width * height * 4)
+    for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+      const offset = (y * width + x) * 4
+      const parentOffset = (((y + 11) % 64) * 64 + (x + 7) % 64) * 4
+      const titleOffset = (((y + 3) % 32) * 32 + (x + 5) % 32) * 4
+      for (let c = 0; c < 3; c++) {
+        const background = 224 * (1 - 3 / 255) + parentTile[parentOffset + c] * 3 / 255
+        data[offset + c] = Math.round(background * (1 - 3 / 255) + titleTile[titleOffset + c] * 3 / 255)
+      }
+      data[offset + 3] = 255
+    }
+    const results = analyzeScreenshot(data, width, height, [parent, heading], { scales: [1], threshold: 0.42 })
+    expect(results[0].component.path).toBe(heading.path)
+    expect(results[0].score).toBeGreaterThan(0.42)
+  })
+  it('does not identify RGB data hidden under zero alpha', () => {
+    const data = generatePatternRgba(createPatternPayload(TARGET), 64, 0.08)
+    for (let offset = 3; offset < data.length; offset += 4) data[offset] = 0
+    const results = analyzeScreenshot(data, 64, 64, [TARGET], { scales: [1] })
+    expect(results[0].score).toBe(0)
+  })
+  it.each([0, -1, NaN, Infinity])('rejects invalid step %s', (step) => {
+    expect(() => analyzeScreenshot(new Uint8ClampedArray(16 * 16 * 4), 16, 16, [TARGET], { step }))
+      .toThrow(/step/)
+  })
+
+  it.each([1, 1024])('rejects excessive scan or refinement work at step %s before reading pixels', (step) => {
+    const pixels = new Proxy(new Uint8ClampedArray(1024 * 1024 * 4), {
+      get(target, property) {
+        if (typeof property === 'string' && /^\d+$/.test(property)) {
+          throw new Error('Read pixels before checking the budget')
+        }
+        return Reflect.get(target, property, target)
+      },
+    })
+    expect(() => analyzeScreenshot(pixels, 1024, 1024, [TARGET], { step }))
+      .toThrow(/computation budget/)
+  })
+
+  it('recovers a 256px CSS tile from a 2x capture', () => {
+    const component = { ...TARGET, patternSize: 256 }
+    const tile = generatePatternRgba(createPatternPayload(component), 256, 0.08)
+    const data = new Uint8ClampedArray(512 * 512 * 4)
+    for (let y = 0; y < 512; y++) {
+      for (let x = 0; x < 512; x++) {
+        const source = (Math.floor(y / 2) * 256 + Math.floor(x / 2)) * 4
+        const destination = (y * 512 + x) * 4
+        const alpha = tile[source + 3] / 255
+        for (let channel = 0; channel < 3; channel++) {
+          data[destination + channel] = Math.round(224 * (1 - alpha) + tile[source + channel] * alpha)
+        }
+        data[destination + 3] = 255
+      }
+    }
+    const results = analyzeScreenshot(data, 512, 512, [component], { scales: [2] })
+    expect(results[0].tileSize).toBe(512)
+    expect(results[0].score).toBeGreaterThan(0.7)
+  })
+})
+
 function makeCapturedCrop(): {
   data: Uint8ClampedArray
   width: number

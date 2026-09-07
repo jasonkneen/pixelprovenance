@@ -194,6 +194,33 @@ for (const reactVersion of ['18.0.0', '18', '19.0.0', '19']) {
     throw new Error('Installed CLI did not print the expected source mapping')
   }
 
+  const decodedJson = run(binary, [
+    '--json', 'sample.png', '--registry', 'registry.json',
+    '--intensity', '0.16', '--threshold', '0.95', '--scale', '1', '--step', '16',
+  ], consumerRoot)
+  const matches = JSON.parse(decodedJson.stdout)
+  if (matches.length !== 1 || matches[0].path !== 'LAB_DASHBOARD/inspection-panel' ||
+      matches[0].source?.file !== 'src/features/lab/InspectionPanel.tsx' ||
+      matches[0].source?.line !== 22 || matches[0].source?.column !== 5 ||
+      matches[0].tileSize !== 64 || matches[0].count !== 1 ||
+      !Number.isFinite(matches[0].score) || matches[0].score < 0.95 || decodedJson.stderr) {
+    throw new Error('Installed CLI did not return the expected JSON mapping')
+  }
+
+  const help = run(binary, ['--help'], consumerRoot)
+  if (!help.stdout.includes('--json') || !help.stdout.includes('--step')) {
+    throw new Error('Installed CLI help does not describe automation options')
+  }
+
+  for (const step of ['0', 'NaN']) {
+    const invalidStep = run(binary, [
+      'sample.png', '--registry', 'registry.json', '--json', '--step', step,
+    ], consumerRoot, 1)
+    if (invalidStep.stdout || !invalidStep.stderr.includes('finite')) {
+      throw new Error('Installed CLI did not reject an invalid scan step on stderr')
+    }
+  }
+
   const invalid = run(
     binary,
     ['sample.png', '--registry', 'invalid-registry.json'],
@@ -212,6 +239,13 @@ for (const reactVersion of ['18.0.0', '18', '19.0.0', '19']) {
   )
   if (!noMatch.stdout.includes('No matching')) {
     throw new Error('Installed CLI did not report the no-match case')
+  }
+
+  const noMatchJson = run(binary, [
+    'flat.png', '--registry', 'registry.json', '--json',
+  ], consumerRoot, 1)
+  if (JSON.stringify(JSON.parse(noMatchJson.stdout)) !== '[]' || noMatchJson.stderr) {
+    throw new Error('Installed CLI did not return an empty JSON array for no match')
   }
 }
 

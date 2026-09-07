@@ -118,6 +118,21 @@ describe('frequency pattern engine', () => {
     expect(ranked[0].path).toBe('APP/card')
   })
 
+  it('ranks score chains consistently regardless of registry order', () => {
+    const parent = { path: 'APP', depth: 1, score: 0.95 }
+    const child = { path: 'APP/card', depth: 2, score: 0.89 }
+    const leaf = { path: 'APP/card/chip', depth: 3, score: 0.83 }
+    for (const matches of [
+      [parent, child, leaf], [parent, leaf, child],
+      [child, parent, leaf], [child, leaf, parent],
+      [leaf, parent, child], [leaf, child, parent],
+    ]) {
+      expect(rankByHierarchy(matches).map((match) => match.path)).toEqual([
+        child.path, parent.path, leaf.path,
+      ])
+    }
+  })
+
   it('keeps different component paths distinguishable', () => {
     const first = generatePattern(createPatternPayload(component), 64, 0.12)
     const second = generatePattern(

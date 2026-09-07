@@ -33,7 +33,7 @@ const DECOY: ComponentDescriptor = {
   depth: 2,
 }
 
-function makePng(tileSize: number, scale = 1): Buffer {
+function makePng(tileSize: number, scale = 1, actualAlpha = false): Buffer {
   const renderedTileSize = tileSize * scale
   const png = new PNG({ width: renderedTileSize * 2, height: renderedTileSize * 4 })
   for (let offset = 0; offset < png.data.length; offset += 4) {
@@ -55,9 +55,10 @@ function makePng(tileSize: number, scale = 1): Buffer {
       const sourceY = Math.floor((y % renderedTileSize) / scale)
       const sourceOffset = (sourceY * tileSize + sourceX) * 4
       const targetOffset = (y * png.width + x) * 4
+      const alpha = actualAlpha ? tile[sourceOffset + 3] / 255 : 0.3
       for (let channel = 0; channel < 3; channel += 1) {
         png.data[targetOffset + channel] = Math.round(
-          tile[sourceOffset + channel] * 0.3 + 220 * 0.7,
+          tile[sourceOffset + channel] * alpha + 220 * (1 - alpha),
         )
       }
       png.data[targetOffset + 3] = 255
@@ -68,6 +69,42 @@ function makePng(tileSize: number, scale = 1): Buffer {
 }
 
 describe('screenshot decoder', () => {
+  it('searches beyond a misleading coarse correlation peak', () => {
+    const component = { path: 'BENCH/card', type: 'card', depth: 2 }
+    const tile = generatePatternRgba(createPatternPayload(component), 64, 0.08)
+    const png = new PNG({ width: 256, height: 320 })
+    for (let y = 0; y < png.height; y++) {
+      for (let x = 0; x < png.width; x++) {
+        const source = ((Math.floor((y + 11) / 2) % 64) * 64 + Math.floor((x + 19) / 2) % 64) * 4
+        const offset = (y * png.width + x) * 4
+        for (let channel = 0; channel < 3; channel++) {
+          png.data[offset + channel] = Math.round(224 * (1 - 3 / 255) + tile[source + channel] * 3 / 255)
+        }
+        png.data[offset + 3] = 255
+      }
+    }
+    expect(decodePng(PNG.sync.write(png), [component])[0])
+      .toMatchObject({ path: component.path, tileSize: 128 })
+  })
+  it('does not identify a signal hidden in fully transparent PNG pixels', () => {
+    const png = new PNG({ width: 64, height: 64 })
+    png.data.set(generatePatternRgba(createPatternPayload(TARGET), 64, 0.16))
+    for (let offset = 3; offset < png.data.length; offset += 4) png.data[offset] = 0
+    expect(decodePng(PNG.sync.write(png), [TARGET], { intensity: 0.16 })).toEqual([])
+  })
+  it.each([1, 2])('recovers an off-grid crop at %dx', (scale) => {
+    const original = PNG.sync.read(makePng(64, scale, true))
+    const cropped = new PNG({ width: original.width - 7, height: original.height - 11 })
+    PNG.bitblt(original, cropped, 7, 11, cropped.width, cropped.height, 0, 0)
+    const results = decodePng(PNG.sync.write(cropped), [TARGET, DECOY], { intensity: 0.16 })
+    expect(results[0]).toMatchObject({ path: TARGET.path, tileSize: 64 * scale })
+  })
+  it.each([1, 2])('recovers the actual browser-opacity carrier at %dx', (scale) => {
+    const results = decodePng(makePng(64, scale, true), [TARGET, DECOY], {
+      intensity: 0.16,
+    })
+    expect(results[0]).toMatchObject({ path: TARGET.path, tileSize: 64 * scale })
+  })
   it('finds a registered pattern in the lower half of a non-square image', () => {
     const png = PNG.sync.read(makePng(32))
     const registry = buildRegistry([TARGET, DECOY], 32, 0.16)
@@ -96,6 +133,16 @@ describe('screenshot decoder', () => {
     expect(results[0].score).toBeGreaterThan(0.8)
   })
 
+  it('decodes the largest supported CSS tile at 2x', () => {
+    const results = decodePng(makePng(256, 2), [{ ...TARGET, patternSize: 256 }], {
+      intensity: 0.16,
+      threshold: 0.8,
+      scales: [2],
+    })
+
+    expect(results[0]).toMatchObject({ path: TARGET.path, tileSize: 512 })
+  })
+
   it('supports the default decoder path and compatibility aliases', () => {
     const image = makePng(64)
     const registry = build([TARGET, DECOY], 64, 0.16)
@@ -121,6 +168,23 @@ describe('screenshot decoder', () => {
     expect(() =>
       scanPixels(pixels, 64, 64, registry, { threshold: Number.POSITIVE_INFINITY }),
     ).toThrow(/finite number/)
+  })
+
+  it.each([0, Number.NaN, -1, Number.POSITIVE_INFINITY])(
+    'rejects invalid decode step %s even when no tile fits', (step) => {
+      expect(() => decodePng(makePng(16), [TARGET], { step, patternSize: 256 }))
+        .toThrow(/positive finite/)
+    },
+  )
+
+  it('rounds a scaled fractional step to at least one pixel', () => {
+    const results = decodePng(makePng(16), [TARGET], {
+      patternSize: 32,
+      intensity: 0.16,
+      scales: [0.5],
+      step: 0.1,
+    })
+    expect(results[0]).toMatchObject({ path: TARGET.path, tileSize: 16 })
   })
 
   it('batches a large registry at 2x without exceeding pattern memory', () => {
@@ -152,6 +216,36 @@ describe('screenshot decoder', () => {
     expect(() =>
       scanPixels(pixels, 512, 512, buildRegistry(components, 16), { step: 1 }),
     ).toThrow(/computation budget/)
+  })
+
+  it('checks the combined budget for mixed tile sizes before reading pixels', () => {
+    const components = Array.from({ length: 240 }, (_, index) => ({
+      path: `component-${index}`,
+      type: 'component',
+      depth: 1,
+      patternSize: index < 120 ? 16 : 32,
+    }))
+    // Each group fits separately (122M and 457M samples), but their sum does not.
+    const pixels = new Proxy(new Uint8Array(512 * 512 * 4), {
+      get(target, property) {
+        if (typeof property === 'string' && /^\d+$/.test(property)) {
+          throw new Error('Read pixels before checking the combined budget')
+        }
+        return Reflect.get(target, property, target)
+      },
+    })
+    expect(() => scanPixels(pixels, 512, 512, buildRegistry(components), { step: 8 }))
+      .toThrow(/computation budget/)
+  })
+
+  it.each(['ragged', 'NaN', 'infinite', 'sparse'])('rejects a %s registry pattern', (kind) => {
+    const registry = buildRegistry([TARGET], 16)
+    if (kind === 'ragged') registry[0].pattern[3].pop()
+    else if (kind === 'sparse') delete registry[0].pattern[3][4]
+    else registry[0].pattern[3][4] = kind === 'NaN' ? Number.NaN : Infinity
+
+    expect(() => scanPixels(new Uint8Array(16 * 16 * 4), 16, 16, registry))
+      .toThrow(/Invalid registry pattern/)
   })
 
   it('rejects interlaced PNG input before decompression', () => {

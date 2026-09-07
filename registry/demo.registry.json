@@ -75,5 +75,26 @@
     "type": "button",
     "depth": 2,
     "source": { "file": "src/features/tasks/CreateTaskButton.tsx", "line": 12, "column": 7 }
+  },
+  {
+    "path": "MORROW_DASHBOARD/sprint-overview/title",
+    "type": "heading",
+    "depth": 3,
+    "patternSize": 32,
+    "source": {"file": "src/features/dashboard/SprintOverview.tsx", "line": 45, "column": 9}
+  },
+  {
+    "path": "MORROW_DASHBOARD/sprint-overview/description",
+    "type": "text",
+    "depth": 3,
+    "patternSize": 16,
+    "source": {"file": "src/features/dashboard/SprintOverview.tsx", "line": 49, "column": 9}
+  },
+  {
+    "path": "MORROW_DASHBOARD/sprint-overview/task-count",
+    "type": "counter",
+    "depth": 3,
+    "patternSize": 16,
+    "source": {"file": "src/features/dashboard/SprintOverview.tsx", "line": 74, "column": 9}
   }
 ]

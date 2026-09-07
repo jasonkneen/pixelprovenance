@@ -13,7 +13,7 @@ npm install
 npm run dev
 ```
 
-The demo presents a normal project dashboard and walks through the complete interaction: draw a rectangle over one card, drag the resulting crop into the analyser, recover its component and source mapping, inspect the highlighted TSX line, then jump back to the originating interface element. A second pass demonstrates the same recovery from a deliberately smaller crop. The analysis runs locally in the browser. The hero also links to a downloadable PDF of the archived research paper.
+The demo presents a normal project dashboard and walks through the complete interaction: draw a rectangle over one card, drag the resulting crop into the analyser, recover its component and source mapping, inspect the highlighted TSX line, then jump back to the originating interface element. The “Capture sprint card” button provides an alternative to drawing, and the crop thumbnail can be clicked to analyse it without drag-and-drop. A second pass demonstrates the same recovery from a deliberately smaller crop. Selections can be as small as 32×32 pixels. The sprint title, description, task count, and individual pills have their own mappings, so a confident small crop can highlight the element within the card. The analysis runs locally in the browser. The hero also links to a downloadable PDF of the archived research paper.
 
 ## Add tags to a React app
 
@@ -96,7 +96,31 @@ Matches print the component path and the `file:line:column` recovered from the m
 --pattern-size 64
 --intensity 0.12
 --scale auto|1|2
+--step 16
+--json
 ```
+
+For scripts and CI, `--json` writes an array of matches to stdout, including
+`path`, `type`, `depth`, optional `source`, `score`, `count`, and `tileSize`:
+
+```bash
+pixelprovenance-decode screenshot.png --registry components.json --json > matches.json
+```
+
+Exit status is 0 when a match is found and 1 for no match or an error. No match
+produces `[]` in JSON mode; errors produce a diagnostic on stderr and no JSON
+on stdout. `--step` controls the scan spacing in 1× pixels (scaled for each
+screenshot scale). Larger values reduce grid sampling but enlarge the local
+refinement search and can miss signals. Run
+`pixelprovenance-decode --help` for the option list.
+
+The default grid spacing is one eighth of the tile width. A denser sampled
+search nominates an additional candidate for each component. The decoder
+refines both candidates at individual pixel offsets, then confirms each using
+the full tile. This helps recover crops whose edges do not
+align with the original signal grid. The crop still needs enough pixels for a
+complete tile, and textured content can interfere with detection. All search
+passes count toward the computation limit.
 
 ## Package API
 

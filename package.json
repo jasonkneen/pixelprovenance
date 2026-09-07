@@ -25,6 +25,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "benchmark:decoder": "node --import tsx scripts/benchmark-decoder.mjs",
     "verify:package": "node scripts/verify-package.mjs",
     "build": "npm run build:lib && npm run build:demo",
     "build:demo": "npm run typecheck && vite build",

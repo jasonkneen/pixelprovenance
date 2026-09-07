@@ -105,8 +105,8 @@ export function isPathAncestor(ancestor: string, descendant: string): boolean {
 }
 
 /**
- * Rank matches so score wins first; when two scores are within `margin`,
- * the deeper path wins. That way a chip crop (chip ≈ parent) reports the
+ * Rank matches in score bands anchored to the strongest remaining match;
+ * within `margin` of that anchor, the deeper path wins. That way a chip crop (chip ≈ parent) reports the
  * chip, while a clearly stronger parent still wins on a full-card crop.
  */
 export function rankByHierarchy<T extends RankableMatch>(
@@ -120,23 +120,29 @@ export function rankByHierarchy<T extends RankableMatch>(
   const aboveThreshold = matches.filter((match) => match.score >= threshold)
   const pool = aboveThreshold.length > 0 ? aboveThreshold : matches
 
-  return [...pool].sort((first, second) => {
-    const scoreDelta = Math.abs(first.score - second.score)
-    if (scoreDelta <= margin) {
-      if (first.depth !== second.depth) return second.depth - first.depth
-      if (isPathAncestor(first.path, second.path) && first.path !== second.path) {
-        return 1
-      }
-      if (isPathAncestor(second.path, first.path) && first.path !== second.path) {
-        return -1
-      }
-      return first.path.localeCompare(second.path)
-    }
+  const byScore = [...pool].sort((first, second) =>
+    second.score - first.score ||
+    second.depth - first.depth ||
+    first.path.localeCompare(second.path),
+  )
+  const ranked: T[] = []
 
-    if (second.score !== first.score) return second.score - first.score
-    if (second.depth !== first.depth) return second.depth - first.depth
-    return first.path.localeCompare(second.path)
-  })
+  // Anchor each tie group to its strongest score. Pairwise margins can form
+  // cycles (A beats C, C beats B, B beats A) and make sorting input-dependent.
+  for (let start = 0; start < byScore.length;) {
+    let end = start + 1
+    while (end < byScore.length && byScore[start].score - byScore[end].score <= margin) {
+      end += 1
+    }
+    ranked.push(...byScore.slice(start, end).sort((first, second) =>
+      second.depth - first.depth ||
+      first.path.localeCompare(second.path) ||
+      second.score - first.score,
+    ))
+    start = end
+  }
+
+  return ranked
 }
 
 /**

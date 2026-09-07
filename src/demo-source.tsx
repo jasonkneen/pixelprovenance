@@ -203,6 +203,36 @@ const SOURCE_SNIPPETS: Record<string, DemoSourceSnippet> = {
       '}',
     ],
   },
+  "MORROW_DASHBOARD/sprint-overview/title": {
+    "file": "src/features/dashboard/SprintOverview.tsx",
+    "startLine": 45,
+    "highlightLine": 45,
+    "lines": [
+      "<DevTag id=\"title\" type=\"heading\" patternSize={32}>",
+      "  <h4>Summer identity refresh</h4>",
+      "</DevTag>"
+    ]
+  },
+  "MORROW_DASHBOARD/sprint-overview/description": {
+    "file": "src/features/dashboard/SprintOverview.tsx",
+    "startLine": 49,
+    "highlightLine": 49,
+    "lines": [
+      "<DevTag id=\"description\" type=\"text\" patternSize={16}>",
+      "  <p>Finalise the campaign system and prepare the launch handoff.</p>",
+      "</DevTag>"
+    ]
+  },
+  "MORROW_DASHBOARD/sprint-overview/task-count": {
+    "file": "src/features/dashboard/SprintOverview.tsx",
+    "startLine": 74,
+    "highlightLine": 74,
+    "lines": [
+      "<DevTag id=\"task-count\" type=\"counter\" patternSize={16}>",
+      "  <b>12 / 16</b><span>tasks complete</span>",
+      "</DevTag>"
+    ]
+  },
 }
 
 const TOKEN_PATTERN =

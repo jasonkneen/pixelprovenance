@@ -141,16 +141,21 @@ export function DevTag({
   const safeIntensity = clampIntensity(intensity ?? parent.intensity)
   const isDebug = debug ?? parent.debug
   const payload = createPatternPayload({ path, type, depth, source })
-  const [patternUrl, setPatternUrl] = useState<string | null>(null)
+  const patternKey = `${payload}\u0000${safeSize}\u0000${safeIntensity}`
+  const [pattern, setPattern] = useState<{ key: string; url: string | null } | null>(null)
+  const patternUrl = pattern?.key === patternKey ? pattern.url : null
 
   useEffect(() => {
     if (!isEnabled || !signal) {
-      setPatternUrl(null)
+      setPattern(null)
       return
     }
 
-    setPatternUrl(createPatternDataUrl(payload, safeSize, safeIntensity))
-  }, [isEnabled, payload, safeIntensity, safeSize, signal])
+    setPattern({
+      key: patternKey,
+      url: createPatternDataUrl(payload, safeSize, safeIntensity),
+    })
+  }, [isEnabled, patternKey, payload, safeIntensity, safeSize, signal])
 
   const contextValue = useMemo<ComponentContextValue>(
     () => ({

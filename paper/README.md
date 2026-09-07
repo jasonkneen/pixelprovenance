@@ -1,46 +1,36 @@
-# PixelProvenance - ArXiv Paper
+# PixelProvenance research archive
 
-> Archive note: the paper describes the original auto-instrumentation prototype and its reported evaluation. The current package uses explicit manual tags and a registry; see the root README for its API and currently verified behavior.
+This archive describes the original auto-instrumentation prototype. The current
+package uses explicit React tags and a registry; see the [root README](../README.md)
+for its API and verified behavior.
 
-Academic paper describing the frequency-domain perceptual encoding approach.
+## Available files
 
-## Files
+- [pixelprovenance.tex](pixelprovenance.tex): archived paper source.
+- [PixelProvenance.pdf](../PixelProvenance.pdf): archived PDF at the repository root.
+- [Public PDF](../public/pixelprovenance-paper.pdf): archived version served by the demo.
 
-- **`pixelprovenance.tex`** - Main paper (corrected, ready for submission)
-- **`pixelprovenance-original.tex`** - Original version (QR/LSB approach, for reference)
-- **`REWRITE-SUMMARY.md`** - Documents what was changed
-- **`figures/`** - Old diagrams (QR-based, not used in corrected paper)
+The two PDFs have different file hashes; they are not byte-identical copies.
 
-## Compile
+Earlier README references to an original-version source, rewrite summary, and
+figures directory did not correspond to files in this checkout.
 
-Requires LaTeX. Install BasicTeX:
+## Compile the source
+
+With a LaTeX installation containing the packages named in the source:
+
 ```bash
-brew install --cask basictex
-```
-
-Then compile:
-```bash
+cd paper
+pdflatex pixelprovenance.tex
 pdflatex pixelprovenance.tex
 ```
 
-Or use Overleaf (upload .tex file, compiles in browser).
+Compilation and submission readiness have not been verified in the current review.
 
-## Paper Details
+## Reported results
 
-**Title**: PixelProvenance: Component Identification via Frequency-Domain Encoding in Web Screenshots
-
-**Author**: Jason Kneen
-
-**Length**: ~8-10 pages, 2,799 words
-
-**Approach**: Frequency-domain perceptual noise patterns + Pearson correlation matching
-
-**Results**: 92.5% accuracy, 68ms decoding time
-
-**ArXiv Categories**: cs.HC (primary), cs.SE (secondary)
-
-## Submission
-
-Ready for arXiv submission at https://arxiv.org/submit
-
-The paper describes the original research implementation. It is not the API reference for the current package.
+The paper is titled *PixelProvenance: Component Identification via Frequency-Domain
+Encoding in Web Screenshots*, by Jason Kneen. It reports 92.5% identification
+accuracy and a 68ms average decode time for the earlier implementation. These are
+archived claims, not measurements of the current package. Current regression and
+package checks are documented in [REVIEW.md](../REVIEW.md).

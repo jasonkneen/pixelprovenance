@@ -48,6 +48,15 @@ export interface DecodeOptions extends ScanOptions {
   scales?: number[]
 }
 
+function assertScanOptions(options: ScanOptions): void {
+  if (options.threshold !== undefined && !Number.isFinite(options.threshold)) {
+    throw new RangeError('Scan threshold must be a finite number')
+  }
+  if (options.step !== undefined && (!Number.isFinite(options.step) || options.step <= 0)) {
+    throw new RangeError('Scan step must be a positive finite number')
+  }
+}
+
 function assertRaster(
   data: Uint8Array,
   width: number,
@@ -100,6 +109,8 @@ function assertComponents(components: ComponentDescriptor[]): void {
   const paths = new Set<string>()
   for (const [index, component] of components.entries()) {
     if (
+      typeof component !== 'object' ||
+      component === null ||
       typeof component.path !== 'string' ||
       component.path.length === 0 ||
       component.path.length > 512 ||
@@ -158,9 +169,11 @@ function extractTiles(
       }
 
       const offset = (pixelY * width + pixelX) * 4
-      const red = data[offset]
-      const green = data[offset + 1]
-      const blue = data[offset + 2]
+      // Stored RGB under zero alpha is not visible screenshot evidence.
+      const visible = data[offset + 3] === 0 ? 0 : 1
+      const red = data[offset] * visible
+      const green = data[offset + 1] * visible
+      const blue = data[offset + 2] * visible
       lumaRow.push((red + green + blue) / 3)
       chromaRow.push(red - (green + blue) / 2)
     }
@@ -207,6 +220,81 @@ function groupRegistryByTileSize(
   return groups
 }
 
+function assertRegistry(registry: RegistryEntry[]): void {
+  assertComponents(registry)
+  let samples = 0
+  for (const [index, entry] of registry.entries()) {
+    const size = entry.pattern?.length
+    if (!Array.isArray(entry.pattern) || size < 16 || size > 512) {
+      throw new TypeError(`Invalid registry pattern at index ${index}`)
+    }
+    samples += size * size
+  }
+  if (samples > MAX_PATTERN_SAMPLES) {
+    throw new RangeError('Registry patterns exceed the decoder memory budget')
+  }
+  for (const [index, entry] of registry.entries()) {
+    for (const row of entry.pattern) {
+      if (!Array.isArray(row) || row.length !== entry.pattern.length) {
+        throw new TypeError(`Invalid registry pattern at index ${index}`)
+      }
+      for (const sample of row) {
+        if (!Number.isFinite(sample)) {
+          throw new TypeError(`Invalid registry pattern at index ${index}`)
+        }
+      }
+    }
+  }
+}
+
+function scanSampleCount(width: number, height: number, tileSize: number, step: number): number {
+  const coarse = (Math.floor((width - tileSize) / step) + 1) *
+    (Math.floor((height - tileSize) / step) + 1) * tileSize * tileSize
+  const stride = Math.max(1, Math.floor(tileSize / 32))
+  const refinement = Math.min(width - tileSize + 1, 2 * step + 1) *
+    Math.min(height - tileSize + 1, 2 * step + 1) * Math.ceil(tileSize / stride) ** 2
+  const fineStep = Math.max(1, Math.floor(step / 4))
+  const dense = fineStep === step ? 0 :
+    (Math.floor((width - tileSize) / fineStep) + 1) *
+    (Math.floor((height - tileSize) / fineStep) + 1) * Math.ceil(tileSize / stride) ** 2
+  return coarse + dense + 2 * (refinement + tileSize * tileSize)
+}
+
+function sampledPatchScore(data: Uint8Array, width: number, x: number, y: number, pattern: PatternMatrix): number {
+  const stride = Math.max(1, Math.floor(pattern.length / 32))
+  let lumaSum = 0, chromaSum = 0, expectedSum = 0
+  let lumaSquareSum = 0, chromaSquareSum = 0, expectedSquareSum = 0
+  let lumaProductSum = 0, chromaProductSum = 0, count = 0
+  for (let row = 0; row < pattern.length; row += stride) {
+    for (let column = 0; column < pattern.length; column += stride) {
+      const offset = ((y + row) * width + x + column) * 4
+      const visible = data[offset + 3] === 0 ? 0 : 1
+      const red = data[offset] * visible
+      const green = data[offset + 1] * visible
+      const blue = data[offset + 2] * visible
+      const luma = (red + green + blue) / 3
+      const chroma = red - (green + blue) / 2
+      const expected = pattern[row][column]
+      lumaSum += luma
+      chromaSum += chroma
+      expectedSum += expected
+      lumaSquareSum += luma * luma
+      chromaSquareSum += chroma * chroma
+      expectedSquareSum += expected * expected
+      lumaProductSum += luma * expected
+      chromaProductSum += chroma * expected
+      count += 1
+    }
+  }
+  const expectedVariance = Math.max(0, expectedSquareSum - expectedSum * expectedSum / count)
+  const lumaDenominator = Math.sqrt(Math.max(0, lumaSquareSum - lumaSum * lumaSum / count) * expectedVariance)
+  const chromaDenominator = Math.sqrt(Math.max(0, chromaSquareSum - chromaSum * chromaSum / count) * expectedVariance)
+  return Math.max(
+    lumaDenominator === 0 ? 0 : (lumaProductSum - lumaSum * expectedSum / count) / lumaDenominator,
+    chromaDenominator === 0 ? 0 : (chromaProductSum - chromaSum * expectedSum / count) / chromaDenominator,
+  )
+}
+
 function scanUniformTileSize(
   data: Uint8Array,
   width: number,
@@ -220,29 +308,11 @@ function scanUniformTileSize(
   }
 
   const requestedThreshold = options.threshold ?? 0.7
-  if (!Number.isFinite(requestedThreshold)) {
-    throw new RangeError('Scan threshold must be a finite number')
-  }
   const threshold = Math.min(1, Math.max(-1, requestedThreshold))
-  const requestedStep = options.step ?? tileSize / 2
-  if (!Number.isFinite(requestedStep) || requestedStep <= 0) {
-    throw new RangeError('Scan step must be a positive finite number')
-  }
+  const requestedStep = options.step ?? tileSize / 8
   const step = Math.max(1, Math.round(requestedStep))
-  const horizontalPositions = Math.floor((width - tileSize) / step) + 1
-  const verticalPositions = Math.floor((height - tileSize) / step) + 1
-  const correlationSamples =
-    horizontalPositions *
-    verticalPositions *
-    registry.length *
-    tileSize *
-    tileSize
-  if (correlationSamples > MAX_CORRELATION_SAMPLES) {
-    throw new RangeError(
-      'Scan exceeds the decoder computation budget; increase step or narrow the registry',
-    )
-  }
   const matches = new Map<string, ScanResult>()
+  const candidates = new Map<RegistryEntry, { x: number; y: number; score: number }>()
 
   for (let y = 0; y <= height - tileSize; y += step) {
     for (let x = 0; x <= width - tileSize; x += step) {
@@ -256,6 +326,8 @@ function scanUniformTileSize(
           comparePatterns(tiles.luma, entry.pattern),
           comparePatterns(tiles.chroma, entry.pattern),
         )
+        const best = candidates.get(entry)
+        if (!best || score > best.score) candidates.set(entry, { x, y, score })
         if (score < threshold) continue
 
         const existing = matches.get(entry.path)
@@ -277,6 +349,48 @@ function scanUniformTileSize(
     }
   }
 
+  for (const [entry, coarseCandidate] of candidates) {
+    const nominations = [coarseCandidate]
+    const fineStep = Math.max(1, Math.floor(step / 4))
+    if (fineStep < step) {
+      let denseCandidate = { ...coarseCandidate, score: -Infinity }
+      for (let y = 0; y <= height - tileSize; y += fineStep) {
+        for (let x = 0; x <= width - tileSize; x += fineStep) {
+          const score = sampledPatchScore(data, width, x, y, entry.pattern)
+          if (score > denseCandidate.score) denseCandidate = { x, y, score }
+        }
+      }
+      nominations.push(denseCandidate)
+    }
+    const confirmed = new Set<string>()
+    for (const candidate of nominations) {
+      let best = { ...candidate, score: -Infinity }
+      for (let y = Math.max(0, candidate.y - step); y <= Math.min(height - tileSize, candidate.y + step); y++) {
+        for (let x = Math.max(0, candidate.x - step); x <= Math.min(width - tileSize, candidate.x + step); x++) {
+          const score = sampledPatchScore(data, width, x, y, entry.pattern)
+          if (score > best.score) best = { x, y, score }
+        }
+      }
+      // A sampled correlation only nominates a position; confirm all its pixels.
+      const position = `${best.x},${best.y}`
+      if ((best.x % step === 0 && best.y % step === 0) || confirmed.has(position)) continue
+      confirmed.add(position)
+      const tiles = extractTiles(data, width, height, best.x, best.y, tileSize)
+      const score = Math.max(comparePatterns(tiles.luma, entry.pattern), comparePatterns(tiles.chroma, entry.pattern))
+      if (score < threshold) continue
+      const existing = matches.get(entry.path)
+      if (existing) {
+        existing.count += 1
+        existing.score = Math.max(existing.score, score)
+      } else {
+        matches.set(entry.path, {
+          path: entry.path, type: entry.type, depth: entry.depth, source: entry.source,
+          score, count: 1, tileSize,
+        })
+      }
+    }
+  }
+
   return [...matches.values()]
 }
 
@@ -287,16 +401,27 @@ export function scanPixels(
   registry: RegistryEntry[],
   options: ScanOptions = {},
 ): ScanResult[] {
+  assertScanOptions(options)
   if (registry.length === 0 || width <= 0 || height <= 0) return []
   assertRaster(data, width, height)
-  if (registry.length > MAX_REGISTRY_ENTRIES) {
-    throw new RangeError(`Registry exceeds the ${MAX_REGISTRY_ENTRIES} component limit`)
+  assertRegistry(registry)
+  const groups = groupRegistryByTileSize(registry)
+  let correlationSamples = 0
+  for (const [tileSize, batch] of groups) {
+    if (tileSize > width || tileSize > height) continue
+    const step = Math.max(1, Math.round(options.step ?? tileSize / 8))
+    correlationSamples += scanSampleCount(width, height, tileSize, step) * batch.length
+  }
+  if (correlationSamples > MAX_CORRELATION_SAMPLES) {
+    throw new RangeError(
+      'Scan exceeds the decoder computation budget; increase step or narrow the registry',
+    )
   }
 
   const threshold = options.threshold ?? 0.7
   const matches = new Map<string, ScanResult>()
 
-  for (const batch of groupRegistryByTileSize(registry).values()) {
+  for (const batch of groups.values()) {
     for (const result of scanUniformTileSize(data, width, height, batch, options)) {
       const existing = matches.get(result.path)
       if (
@@ -347,6 +472,7 @@ export function decodePng(
   components: ComponentDescriptor[],
   options: DecodeOptions = {},
 ): ScanResult[] {
+  assertScanOptions(options)
   const baseSize = options.patternSize ?? DEFAULT_PATTERN_SIZE
   const intensity = options.intensity ?? DEFAULT_INTENSITY
   const scales = options.scales?.length ? options.scales : [1, 2]
@@ -370,15 +496,12 @@ export function decodePng(
       if (tileSize < 16 || tileSize > 512 || png.width < tileSize || png.height < tileSize) {
         continue
       }
-      const requestedStep = options.step ? options.step * scale : tileSize / 2
+      const requestedStep = options.step !== undefined ? options.step * scale : tileSize / 8
       if (!Number.isFinite(requestedStep) || requestedStep <= 0) {
         throw new RangeError('Scan step must be a positive finite number')
       }
       const step = Math.max(1, Math.round(requestedStep))
-      const horizontalPositions = Math.floor((png.width - tileSize) / step) + 1
-      const verticalPositions = Math.floor((png.height - tileSize) / step) + 1
-      totalCorrelationSamples +=
-        horizontalPositions * verticalPositions * tileSize * tileSize
+      totalCorrelationSamples += scanSampleCount(png.width, png.height, tileSize, step)
     }
   }
   if (totalCorrelationSamples > MAX_CORRELATION_SAMPLES) {
@@ -408,18 +531,16 @@ export function decodePng(
       )
 
       for (let start = 0; start < batchComponents.length; start += batchSize) {
-        // Force this scale's tile size for the batch (overrides per-entry 1× size).
-        const registry = buildRegistry(
-          batchComponents.slice(start, start + batchSize).map((component) => ({
+        // Descriptors retain their CSS size; only the generated raster is scaled.
+        const registry: RegistryEntry[] = batchComponents
+          .slice(start, start + batchSize)
+          .map((component) => ({
             ...component,
-            patternSize: tileSize,
-          })),
-          tileSize,
-          intensity,
-        )
+            pattern: generatePattern(createPatternPayload(component), tileSize, intensity),
+          }))
         const results = scanPixels(png.data, png.width, png.height, registry, {
           threshold: options.threshold,
-          step: options.step ? Math.round(options.step * scale) : undefined,
+          step: options.step !== undefined ? options.step * scale : undefined,
         })
 
         for (const result of results) {
@@ -530,7 +651,11 @@ interface CliOptions {
   patternSize?: number
   intensity?: number
   scales?: number[]
+  step?: number
+  json: boolean
 }
+
+const CLI_USAGE = 'Usage: pixelprovenance-decode <image.png> --registry <components.json> [--threshold 0.7] [--pattern-size 64] [--intensity 0.12] [--scale auto|1|2] [--step pixels] [--json]'
 
 function readFlag(args: string[], flag: string): string | undefined {
   const index = args.indexOf(flag)
@@ -551,11 +676,13 @@ function parseCli(args: string[]): CliOptions {
     '--pattern-size',
     '--intensity',
     '--scale',
+    '--step',
   ])
   const positional: string[] = []
 
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index]
+    if (argument === '--json') continue
     if (!argument.startsWith('--')) {
       positional.push(argument)
       continue
@@ -571,7 +698,7 @@ function parseCli(args: string[]): CliOptions {
 
   if (!imagePath || !registryPath) {
     throw new Error(
-      'Usage: pixelprovenance-decode <image.png> --registry <components.json> [--threshold 0.7] [--pattern-size 64] [--intensity 0.12] [--scale auto|1|2]',
+      CLI_USAGE,
     )
   }
 
@@ -587,10 +714,16 @@ function parseCli(args: string[]): CliOptions {
     patternSize: parseNumber(readFlag(args, '--pattern-size'), '--pattern-size'),
     intensity: parseNumber(readFlag(args, '--intensity'), '--intensity'),
     scales,
+    step: parseNumber(readFlag(args, '--step'), '--step'),
+    json: args.includes('--json'),
   }
 }
 
 function runCli(args: string[]): number {
+  if (args.length === 1 && (args[0] === '--help' || args[0] === '-h')) {
+    console.log(CLI_USAGE)
+    return 0
+  }
   try {
     const options = parseCli(args)
     if (!existsSync(options.imagePath)) throw new Error(`Image not found: ${options.imagePath}`)
@@ -601,6 +734,11 @@ function runCli(args: string[]): number {
 
     const components = readComponents(options.registryPath)
     const results = decodePng(readFileSync(options.imagePath), components, options)
+
+    if (options.json) {
+      console.log(JSON.stringify(results, null, 2))
+      return results.length === 0 ? 1 : 0
+    }
 
     if (results.length === 0) {
       console.log('No matching PixelProvenance signals found.')

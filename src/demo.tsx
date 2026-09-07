@@ -1,4 +1,5 @@
 import {
+  useEffect,
   useRef,
   useState,
   type ChangeEvent,
@@ -21,8 +22,8 @@ import type { ComponentDescriptor } from './pattern.js'
 const SIGNAL_INTENSITY = 0.08
 const MATCH_THRESHOLD = 0.42
 const LEAF_PATTERN_SIZE = 32
-/** Minimum crop edge so one full signal tile (64px) fits with a little slack. */
-const MIN_SELECTION_PX = 72
+/** Small selections can identify leaf signals without pulling in the whole card. */
+const MIN_SELECTION_PX = 32
 const MAX_CAPTURE_PIXELS = 8_000_000
 
 /**
@@ -156,6 +157,40 @@ const COMPONENTS: ComponentDescriptor[] = [
       column: 7,
     },
   },
+  {
+    "path": "MORROW_DASHBOARD/sprint-overview/title",
+    "type": "heading",
+    "depth": 3,
+    "patternSize": 32,
+    "source": {
+      "file": "src/features/dashboard/SprintOverview.tsx",
+      "line": 45,
+      "column": 9
+    }
+  },
+  {
+    "path": "MORROW_DASHBOARD/sprint-overview/description",
+    "type": "text",
+    "depth": 3,
+    "patternSize": 16,
+    "source": {
+      "file": "src/features/dashboard/SprintOverview.tsx",
+      "line": 49,
+      "column": 9
+    }
+  },
+  {
+    "path": "MORROW_DASHBOARD/sprint-overview/task-count",
+    "type": "counter",
+    "depth": 3,
+    "patternSize": 16,
+    "source": {
+      "file": "src/features/dashboard/SprintOverview.tsx",
+      "line": 74,
+      "column": 9
+    }
+  },
+
 ]
 
 const COMPONENT_BY_PATH = new Map(
@@ -295,6 +330,11 @@ export default function App() {
   const sampleHostRef = useRef<HTMLDivElement>(null)
   const selectionStartRef = useRef<{ x: number; y: number } | null>(null)
   const pendingCaptureRef = useRef<HTMLCanvasElement | null>(null)
+  const analysisRequestRef = useRef(0)
+
+  useEffect(() => () => {
+    analysisRequestRef.current += 1
+  }, [])
 
   const bestMatch = matches[0]
 
@@ -305,7 +345,12 @@ export default function App() {
     setSelectionMessage('')
   }
 
-  async function processCapture(sourceCanvas: HTMLCanvasElement, name: string) {
+  async function processCapture(
+    sourceCanvas: HTMLCanvasElement,
+    name: string,
+    request = ++analysisRequestRef.current,
+  ) {
+    if (request !== analysisRequestRef.current) return
     setAnalysisState('reading')
     setErrorMessage('')
     setMatches([])
@@ -330,6 +375,7 @@ export default function App() {
       setCaptureSize(`${canvas.width} × ${canvas.height}px`)
 
       await new Promise<void>((resolve) => window.setTimeout(resolve, 80))
+      if (request !== analysisRequestRef.current) return
       const pixels = context.getImageData(0, 0, canvas.width, canvas.height)
       const ranked = analyzeScreenshot(
         pixels.data,
@@ -364,12 +410,16 @@ export default function App() {
       setAnalysisState('matched')
       setShowSource(true)
     } catch (error) {
+      if (request !== analysisRequestRef.current) return
       setAnalysisState('error')
       setErrorMessage(error instanceof Error ? error.message : String(error))
     }
   }
 
   async function analyzeFile(file: File) {
+    const request = ++analysisRequestRef.current
+    pendingCaptureRef.current = null
+    setPendingPreview('')
     clearSourceFocus()
     if (!file.type.startsWith('image/')) {
       setAnalysisState('error')
@@ -382,6 +432,14 @@ export default function App() {
 
     try {
       const bitmap = await createImageBitmap(file)
+      if (request !== analysisRequestRef.current) {
+        bitmap.close()
+        return
+      }
+      if (bitmap.width * bitmap.height > MAX_CAPTURE_PIXELS) {
+        bitmap.close()
+        throw new Error('That capture is too large. Crop one app panel and try again.')
+      }
       const sourceCanvas = document.createElement('canvas')
       sourceCanvas.width = bitmap.width
       sourceCanvas.height = bitmap.height
@@ -390,10 +448,14 @@ export default function App() {
         bitmap.close()
         throw new Error('This browser could not open the screenshot canvas.')
       }
-      context.drawImage(bitmap, 0, 0)
-      bitmap.close()
-      await processCapture(sourceCanvas, file.name)
+      try {
+        context.drawImage(bitmap, 0, 0)
+      } finally {
+        bitmap.close()
+      }
+      await processCapture(sourceCanvas, file.name, request)
     } catch (error) {
+      if (request !== analysisRequestRef.current) return
       setAnalysisState('error')
       setErrorMessage(error instanceof Error ? error.message : String(error))
     }
@@ -463,7 +525,7 @@ export default function App() {
     selectionStartRef.current = point
     setSelection({ x: point.x, y: point.y, width: 0, height: 0 })
     setSelectionMessage(
-      `Drag to at least ${MIN_SELECTION_PX} × ${MIN_SELECTION_PX}px (one signal tile). Short drags snap up on release.`,
+      `Drag to at least ${MIN_SELECTION_PX} × ${MIN_SELECTION_PX}px (a leaf signal tile). Short drags snap up on release.`,
     )
     setSelectionLabel('')
     setFocusedPath('')
@@ -487,6 +549,10 @@ export default function App() {
     const app = host?.querySelector<HTMLElement>('.sample-app')
     if (!host || !app) return
 
+    const request = ++analysisRequestRef.current
+    pendingCaptureRef.current = null
+    setPendingPreview('')
+
     setAnalysisState('capturing')
     setErrorMessage('')
 
@@ -497,6 +563,7 @@ export default function App() {
         pixelRatio: 1,
         skipFonts: true,
       })
+      if (request !== analysisRequestRef.current) return
       const scaleX = rendered.width / host.clientWidth
       const scaleY = rendered.height / host.clientHeight
       const crop = document.createElement('canvas')
@@ -523,12 +590,14 @@ export default function App() {
       setCaptureSize(`${crop.width} × ${crop.height}px`)
       setAnalysisState('ready')
       window.setTimeout(() => {
+        if (request !== analysisRequestRef.current) return
         document.getElementById('analyse')?.scrollIntoView({
           behavior: 'smooth',
           block: 'start',
         })
       }, 120)
     } catch (error) {
+      if (request !== analysisRequestRef.current) return
       setAnalysisState('error')
       setErrorMessage(error instanceof Error ? error.message : String(error))
     }
@@ -573,7 +642,35 @@ export default function App() {
     if (capture) void processCapture(capture, captureName)
   }
 
+  function captureSprintCard() {
+    const host = sampleHostRef.current
+    const card = host?.querySelector<HTMLElement>('.sprint-card')
+    if (!host || !card || analysisState === 'capturing') return
+    const bounds = host.getBoundingClientRect()
+    const region = card.getBoundingClientRect()
+    if (bounds.width <= 0 || bounds.height <= 0) return
+    const scaleX = host.clientWidth / bounds.width
+    const scaleY = host.clientHeight / bounds.height
+    const left = Math.max(bounds.left, region.left)
+    const top = Math.max(bounds.top, region.top)
+    const right = Math.min(bounds.right, region.right)
+    const bottom = Math.min(bounds.bottom, region.bottom)
+    if (right <= left || bottom <= top) return
+    const area = {
+      x: (left - bounds.left) * scaleX,
+      y: (top - bounds.top) * scaleY,
+      width: (right - left) * scaleX,
+      height: (bottom - top) * scaleY,
+    }
+    setSelection(area)
+    setSelectionLabel('')
+    setFocusedPath('')
+    setSelectionMessage('Capturing the sprint card…')
+    void prepareInPageCapture(area)
+  }
+
   function trySmallerCapture() {
+    const request = ++analysisRequestRef.current
     setCaptureRound(2)
     setAnalysisState('idle')
     setMatches([])
@@ -586,6 +683,7 @@ export default function App() {
     setSelectionLabel('')
     pendingCaptureRef.current = null
     window.setTimeout(() => {
+      if (request !== analysisRequestRef.current) return
       sampleHostRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
     }, 80)
   }
@@ -667,7 +765,7 @@ export default function App() {
         </h1>
         <p className="hero-copy">
           Each tagged region embeds its path and source location into a faint
-          frequency pattern in the pixels. Crop a card or a single chip; the
+          frequency pattern in the pixels. Crop a card, heading, or chip; the
           noise itself carries the mapping back to the code.
         </p>
         <a
@@ -691,12 +789,12 @@ export default function App() {
           <h2>
             {captureRound === 1
               ? 'Draw around the sprint card.'
-              : 'Now crop a single chip.'}
+              : 'Now crop an individual element.'}
           </h2>
           <p>
             {captureRound === 1
               ? 'Click and drag over the sample app. Start with the whole outlined card — that recovers the project-card path.'
-              : 'Draw around one of the task pills (Research, Design system, Handoff). Nested tags should resolve to that chip’s source line.'}
+              : 'Draw tightly around the title, description, task count, or a pill. Each has its own source mapping.'}
           </p>
         </div>
 
@@ -707,7 +805,7 @@ export default function App() {
             <small>
               {captureRound === 1
                 ? `Aim for the blue outline · min ${MIN_SELECTION_PX}×${MIN_SELECTION_PX}`
-                : `Aim for a task pill · min ${MIN_SELECTION_PX}×${MIN_SELECTION_PX} (snaps if short)`}
+                : `Aim for a title or pill · min ${MIN_SELECTION_PX}×${MIN_SELECTION_PX} (snaps if short)`}
             </small>
           </div>
           <label className="bounds-toggle">
@@ -719,6 +817,14 @@ export default function App() {
             <span />
             Show component bounds
           </label>
+          <button
+            type="button"
+            className="capture-card-button"
+            disabled={analysisState === 'capturing'}
+            onClick={captureSprintCard}
+          >
+            Capture sprint card
+          </button>
         </div>
 
         <div className="sample-frame">
@@ -840,17 +946,23 @@ export default function App() {
                 >
                   <div className="capture-callout" id="capture-target">
                     <span>
-                      {captureRound === 1 ? 'Start with this card' : 'Crop a nested chip'}
+                      {captureRound === 1 ? 'Start with this card' : 'Crop an individual element'}
                     </span>
                     <small>
                       {captureRound === 1
                         ? 'Draw around the blue corners'
-                        : 'Try Research / Design system / Handoff'}
+                        : 'Try the title, description, task count, or a pill'}
                     </small>
                   </div>
                   <div className="card-topline"><span>Priority project</span><small>3 days left</small></div>
-                  <h4>Summer identity refresh</h4>
-                  <p>Finalise the campaign system and prepare the launch handoff.</p>
+                  <DevTag id="title" {...embedded('MORROW_DASHBOARD/sprint-overview/title')}
+                    className={sourceFocusClass('MORROW_DASHBOARD/sprint-overview/title', 'sprint-title')}>
+                    <h4>Summer identity refresh</h4>
+                  </DevTag>
+                  <DevTag id="description" {...embedded('MORROW_DASHBOARD/sprint-overview/description')}
+                    className={sourceFocusClass('MORROW_DASHBOARD/sprint-overview/description', 'sprint-description')}>
+                    <p>Finalise the campaign system and prepare the launch handoff.</p>
+                  </DevTag>
                   <div className="task-pills">
                     <DevTag
                       id="pill-research"
@@ -885,7 +997,10 @@ export default function App() {
                   </div>
                   <div className="card-footer">
                     <div className="avatar-stack"><i>JL</i><i>AK</i><i>MS</i></div>
-                    <div><b>12 / 16</b><span>tasks complete</span></div>
+                    <DevTag id="task-count" {...embedded('MORROW_DASHBOARD/sprint-overview/task-count')}
+                      className={sourceFocusClass('MORROW_DASHBOARD/sprint-overview/task-count')}>
+                      <b>12 / 16</b><span>tasks complete</span>
+                    </DevTag>
                   </div>
                 </DevTag>
 
