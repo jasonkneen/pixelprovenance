@@ -1,4 +1,5 @@
 import { Buffer } from 'node:buffer'
+import { execFileSync } from 'node:child_process'
 
 import { PNG } from 'pngjs'
 import { describe, expect, it } from 'vitest'
@@ -296,5 +297,36 @@ describe('screenshot decoder', () => {
       png.data[offset + 3] = 255
     }
     expect(decodePng(PNG.sync.write(png), [legacy], { intensity: 0.16 })[0]?.path).toBe(TARGET.path)
+  })
+
+  // The whole reason v3 exists: a screenshot saved as JPEG and pasted back
+  // must still decode. v2 carriers (chroma axis) are destroyed by JPEG 4:2:0
+  // chroma subsampling regardless of DCT quality. v3 carriers (luma axis)
+  // survive because luma lives in the Y plane which keeps full resolution.
+  it.each([70, 75, 80, 90])('v3 carrier survives a JPEG q%i round-trip', (quality) => {
+    const v3 = { ...TARGET, patternVersion: 3 as const }
+    const tile = generatePatternRgba(createPatternPayload(v3), 64, 0.08, 3)
+    const png = new PNG({ width: 128, height: 160 })
+    for (let offset = 0; offset < png.data.length; offset += 4) {
+      const pixel = offset / 4
+      const source = ((Math.floor(pixel / 128) % 64) * 64 + (pixel % 64)) * 4
+      const alpha = tile[source + 3] / 255
+      for (let channel = 0; channel < 3; channel += 1) {
+        png.data[offset + channel] = Math.round(tile[source + channel] * alpha + 224 * (1 - alpha))
+      }
+      png.data[offset + 3] = 255
+    }
+    // Round-trip via ImageMagick: PNG → JPEG q{quality} → PNG. ImageMagick
+    // defaults to 4:2:0 chroma subsampling, the case bug-report screenshots hit.
+    const sourcePng = PNG.sync.write(png)
+    const jpeg = execFileSync('magick', ['-', '-quality', String(quality), 'jpg:-'], {
+      input: sourcePng,
+    })
+    const recovered = execFileSync('magick', ['jpg:-', '-quality', '100', 'png:-'], {
+      input: jpeg,
+    })
+    const results = decodePng(Buffer.from(recovered), [v3], { intensity: 0.08, scales: [1] })
+    expect(results[0]?.path).toBe(TARGET.path)
+    expect(results[0].score).toBeGreaterThan(0.5)
   })
 })
