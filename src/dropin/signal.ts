@@ -1,20 +1,30 @@
 import {
   clampIntensity,
-  clampPatternSize,
   createPatternPayload,
   generatePatternRgba,
 } from '../pattern.js'
-import { resolveIdentity } from './identity.js'
+import { buildIdentityIndex, tagPatternSize } from './identity.js'
 
 const patternUrlCache = new Map<string, string>()
-const MAX_CACHED_PATTERN_URLS = 128
+const MAX_CACHED_PATTERN_URLS = 256
+// Catches layout moves no observer reports (CSS transitions, sticky, etc.).
+const SAFETY_RECONCILE_MS = 1000
+const WATCHED_ATTRIBUTES = [
+  'data-pp',
+  'data-pp-key',
+  'data-pp-type',
+  'data-pp-source',
+  'data-pp-pattern-size',
+  'class',
+  'style',
+  'hidden',
+]
 
 function createPatternDataUrl(
   payload: string,
   patternSize: number,
   intensity: number,
 ): string | null {
-  if (typeof document === 'undefined') return null
   const cacheKey = `${payload}\u0000${patternSize}\u0000${intensity}`
   const cached = patternUrlCache.get(cacheKey)
   if (cached) return cached
@@ -39,67 +49,186 @@ function createPatternDataUrl(
   }
 }
 
+interface Box {
+  left: number
+  top: number
+  right: number
+  bottom: number
+}
+
+function intersect(first: Box, second: Box): Box {
+  return {
+    left: Math.max(first.left, second.left),
+    top: Math.max(first.top, second.top),
+    right: Math.min(first.right, second.right),
+    bottom: Math.min(first.bottom, second.bottom),
+  }
+}
+
+/** Viewport box of `element` after clipping by overflow-hidden ancestors. */
+function visibleBox(
+  element: HTMLElement,
+  rect: DOMRect,
+  clipCache: Map<Element, Box | null>,
+): Box {
+  let box: Box = { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }
+  for (let parent = element.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
+    let clip = clipCache.get(parent)
+    if (clip === undefined) {
+      const style = getComputedStyle(parent)
+      const clips = style.overflowX !== 'visible' || style.overflowY !== 'visible'
+      const parentRect = parent.getBoundingClientRect()
+      clip = clips
+        ? { left: parentRect.left, top: parentRect.top, right: parentRect.right, bottom: parentRect.bottom }
+        : null
+      clipCache.set(parent, clip)
+    }
+    if (clip) box = intersect(box, clip)
+    if (box.right <= box.left || box.bottom <= box.top) break
+  }
+  return box
+}
+
+export interface SignalOptions {
+  intensity: number
+  patternSize: number
+  debug: boolean
+}
+
+/**
+ * Paint each `[data-pp]` carrier into one overlay layer instead of the host
+ * tree. Host elements are never restyled or given children, so void elements
+ * (`img`, `input`) work, framework reconciliation is untouched, and absolute
+ * descendants keep their containing block. Observers keep the layer in step
+ * with added/removed tags, resizes and scrolling.
+ */
 export function applySignals(
   root: ParentNode,
   pageId: string,
-  options: { intensity: number; patternSize: number; debug: boolean },
+  options: SignalOptions,
 ): () => void {
   const intensity = clampIntensity(options.intensity)
-  const owned: HTMLElement[] = []
-  for (const node of root.querySelectorAll('[data-pp]')) {
-    if (!(node instanceof HTMLElement)) continue
-    if (node.closest('[data-pp-toolbar]')) continue
-    if (node.querySelector(':scope > [data-pixelprovenance-signal]')) continue
-    const identity = resolveIdentity(node, pageId)
-    const patternSize = clampPatternSize(
-      Number(node.getAttribute('data-pp-pattern-size')) || options.patternSize,
-    )
-    node.setAttribute('data-pixelprovenance-id', node.getAttribute('data-pp') ?? '')
-    node.setAttribute('data-pixelprovenance-path', identity.path)
-    node.setAttribute('data-pixelprovenance-type', identity.type)
-    if (identity.source) {
-      node.setAttribute(
-        'data-pixelprovenance-source',
-        `${identity.source.file}:${identity.source.line}:${identity.source.column}`,
-      )
+  const layer = document.createElement('div')
+  layer.setAttribute('data-pp-signal-layer', '')
+  layer.setAttribute('aria-hidden', 'true')
+  layer.style.cssText = [
+    'position:absolute',
+    'left:0',
+    'top:0',
+    'width:0',
+    'height:0',
+    'overflow:visible',
+    'pointer-events:none',
+    'z-index:2147482000',
+  ].join(';')
+  ;(document.body ?? document.documentElement).append(layer)
+
+  const tiles = new Map<HTMLElement, HTMLDivElement>()
+  const resizeObserver = typeof ResizeObserver === 'undefined'
+    ? null
+    : new ResizeObserver(() => schedule())
+  let frame = 0
+  let stopped = false
+
+  function reconcile(): void {
+    frame = 0
+    if (stopped) return
+    const index = buildIdentityIndex(root, pageId)
+    const live = new Set(index.tagged)
+    for (const [element, tile] of tiles) {
+      if (live.has(element)) continue
+      tile.remove()
+      tiles.delete(element)
+      resizeObserver?.unobserve(element)
     }
-    const computed = window.getComputedStyle(node)
-    if (computed.position === 'static') {
-      node.style.position = 'relative'
-      node.setAttribute('data-pp-restore-position', 'static')
-    }
-    const payload = createPatternPayload({
-      path: identity.path,
-      type: identity.type,
-      depth: identity.depth,
-      source: identity.source,
-    })
-    const url = createPatternDataUrl(payload, patternSize, intensity)
-    const signal = document.createElement('span')
-    signal.setAttribute('aria-hidden', 'true')
-    signal.setAttribute('data-pixelprovenance-signal', '')
-    signal.setAttribute('data-pp-owned-signal', '')
-    signal.style.cssText = [
-      'position:absolute',
-      'inset:0',
-      `z-index:${20 + identity.depth}`,
-      'pointer-events:none',
-      options.debug ? 'border:1px solid rgba(82, 101, 255, 0.85)' : 'border:0',
-      url ? `background-image:url(${url})` : '',
-      'background-repeat:repeat',
-      'background-position:0 0',
-      `background-size:${patternSize}px ${patternSize}px`,
-    ].filter(Boolean).join(';')
-    node.append(signal)
-    owned.push(node)
-  }
-  return () => {
-    for (const node of owned) {
-      node.querySelectorAll(':scope > [data-pp-owned-signal]').forEach((signal) => signal.remove())
-      if (node.getAttribute('data-pp-restore-position') === 'static') {
-        node.style.position = ''
-        node.removeAttribute('data-pp-restore-position')
+    const origin = layer.getBoundingClientRect()
+    // Snap to device pixels: a fractional offset makes capture tools resample the tile.
+    const ratio = window.devicePixelRatio || 1
+    const snap = (value: number) => Math.round(value * ratio) / ratio
+    const clipCache = new Map<Element, Box | null>()
+    for (const element of index.tagged) {
+      let tile = tiles.get(element)
+      if (!tile) {
+        tile = document.createElement('div')
+        tile.setAttribute('data-pixelprovenance-signal', '')
+        tiles.set(element, tile)
+        layer.append(tile)
+        resizeObserver?.observe(element)
       }
+      // A React DevTag already paints its own carrier child; do not double-paint.
+      if (element.querySelector(':scope > [data-pixelprovenance-signal]')) {
+        tile.style.display = 'none'
+        continue
+      }
+      const identity = index.identify(element)
+      const rect = element.getBoundingClientRect()
+      const box = visibleBox(element, rect, clipCache)
+      const hidden = rect.width === 0 || rect.height === 0 ||
+        box.right <= box.left || box.bottom <= box.top ||
+        getComputedStyle(element).visibility === 'hidden'
+      if (hidden) {
+        tile.style.display = 'none'
+        continue
+      }
+      const patternSize = tagPatternSize(element, options.patternSize)
+      const payload = createPatternPayload({
+        path: identity.path,
+        type: identity.type,
+        depth: identity.depth,
+        source: identity.source,
+      })
+      const url = createPatternDataUrl(payload, patternSize, intensity)
+      tile.setAttribute('data-pixelprovenance-path', identity.path)
+      tile.style.cssText = [
+        'position:absolute',
+        'display:block',
+        `left:${snap(box.left - origin.left)}px`,
+        `top:${snap(box.top - origin.top)}px`,
+        `width:${snap(box.right - box.left)}px`,
+        `height:${snap(box.bottom - box.top)}px`,
+        `z-index:${identity.depth}`,
+        options.debug ? 'outline:1px solid rgba(82, 101, 255, 0.85)' : '',
+        url ? `background-image:url(${url})` : '',
+        'background-repeat:repeat',
+        // Anchor tiles to the element's own origin even when clipped.
+        `background-position:${snap(rect.left - box.left)}px ${snap(rect.top - box.top)}px`,
+        `background-size:${patternSize}px ${patternSize}px`,
+      ].filter(Boolean).join(';')
     }
+  }
+
+  function schedule(): void {
+    if (frame || stopped) return
+    frame = typeof requestAnimationFrame === 'function'
+      ? requestAnimationFrame(reconcile)
+      : (setTimeout(reconcile, 16) as unknown as number)
+  }
+
+  const mutationObserver = new MutationObserver((records) => {
+    if (records.every((record) => layer.contains(record.target))) return
+    schedule()
+  })
+  mutationObserver.observe(document.documentElement, {
+    subtree: true,
+    childList: true,
+    attributes: true,
+    attributeFilter: WATCHED_ATTRIBUTES,
+  })
+  window.addEventListener('scroll', schedule, { capture: true, passive: true })
+  window.addEventListener('resize', schedule)
+  const safety = setInterval(schedule, SAFETY_RECONCILE_MS)
+
+  reconcile()
+
+  return () => {
+    stopped = true
+    if (frame && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(frame)
+    mutationObserver.disconnect()
+    resizeObserver?.disconnect()
+    window.removeEventListener('scroll', schedule, { capture: true })
+    window.removeEventListener('resize', schedule)
+    clearInterval(safety)
+    layer.remove()
+    tiles.clear()
   }
 }

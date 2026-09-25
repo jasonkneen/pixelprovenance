@@ -258,4 +258,43 @@ describe('screenshot decoder', () => {
     expect(() => decodePng(interlacedHeader, [TARGET], { scales: [1] }))
       .toThrow(/Interlaced PNG/)
   })
+
+  it('finds several v2 tags at their own positions in a full screenshot', () => {
+    const tags = ['shell/nav', 'shell/main', 'shell/aside'].map((path) => ({ path, type: 'region', depth: 2 }))
+    const png = new PNG({ width: 480, height: 200 })
+    const alpha = 3 / 255
+    const tiles = tags.map((tag) => generatePatternRgba(createPatternPayload(tag), 64, 0.06))
+    for (let y = 0; y < 200; y += 1) {
+      for (let x = 0; x < 480; x += 1) {
+        const tile = tiles[Math.floor(x / 160)]
+        const source = ((y % 64) * 64 + ((x - Math.floor(x / 160) * 160) % 64)) * 4
+        const offset = (y * 480 + x) * 4
+        for (let channel = 0; channel < 3; channel += 1) {
+          png.data[offset + channel] = Math.round(236 * (1 - alpha) + tile[source + channel] * alpha)
+        }
+        png.data[offset + 3] = 255
+      }
+    }
+    const results = decodePng(PNG.sync.write(png), tags, { scales: [1] })
+    expect(results.map((result) => result.path).sort()).toEqual(tags.map((tag) => tag.path).sort())
+    for (const result of results) {
+      expect(result.score).toBeGreaterThan(0.8)
+      expect(result.count).toBeGreaterThan(0)
+    }
+  })
+
+  it('still decodes legacy v1 carriers when asked', () => {
+    const legacy = { ...TARGET, patternVersion: 1 as const }
+    const tile = generatePatternRgba(createPatternPayload(legacy), 64, 0.16, 1)
+    const png = new PNG({ width: 128, height: 128 })
+    for (let offset = 0; offset < png.data.length; offset += 4) {
+      const pixel = offset / 4
+      const source = (((Math.floor(pixel / 128)) % 64) * 64 + (pixel % 128) % 64) * 4
+      for (let channel = 0; channel < 3; channel += 1) {
+        png.data[offset + channel] = Math.round(tile[source + channel] * 0.3 + 220 * 0.7)
+      }
+      png.data[offset + 3] = 255
+    }
+    expect(decodePng(PNG.sync.write(png), [legacy], { intensity: 0.16 })[0]?.path).toBe(TARGET.path)
+  })
 })

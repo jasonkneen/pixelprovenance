@@ -1,7 +1,7 @@
 import type { ScreenshotMatch } from '../demo-analysis.js'
 import { pathDepth } from '../pattern.js'
 import { createSelectionPackage } from './package.js'
-import type { SelectionPackage, SelectionRect } from './types.js'
+import type { CropCandidate, SelectionPackage, SelectionRect } from './types.js'
 
 export const MIN_SELECTION_PX = 32
 
@@ -34,28 +34,65 @@ export function finishCrop(options: {
   pageId: string
   rect: SelectionRect
   image: string
+  /** Fallback html/selector for the element under the crop centre. */
   html: string
   selector: string
-  matches: ScreenshotMatch[]
+  /** DOM geometry candidates from `locateCrop`, best first. */
+  candidates?: CropCandidate[]
+  /** Pixel-decode matches, best first (external screenshots or verification). */
+  matches?: ScreenshotMatch[]
   threshold: number
 }): SelectionPackage {
-  const best = options.matches[0]
-  if (best && best.score >= options.threshold) {
-    return createSelectionPackage({
+  const candidates = options.candidates ?? []
+  const subject = candidates[0]
+  const best = options.matches?.[0]
+  const pixelHit = best && best.score >= options.threshold ? best : undefined
+  const listed = candidates.map(({ element: _element, ...rest }) => rest)
+
+  if (subject && subject.coverage >= 0.5) {
+    const pkg = createSelectionPackage({
       pageId: options.pageId,
-      path: best.component.path,
-      type: best.component.type,
-      depth: best.component.depth,
+      path: subject.path,
+      type: subject.type,
+      depth: subject.depth,
+      selector: subject.selector,
+      rect: options.rect,
+      html: subject.element?.outerHTML ?? options.html,
+      image: options.image,
+      source: subject.source,
+    })
+    pkg.method = 'dom'
+    pkg.candidates = listed
+    if (options.matches) {
+      pkg.pixel = {
+        path: pixelHit?.component.path ?? null,
+        score: round(best?.score ?? 0),
+        agrees: pixelHit?.component.path === subject.path,
+      }
+    }
+    return pkg
+  }
+
+  if (pixelHit) {
+    const pkg = createSelectionPackage({
+      pageId: options.pageId,
+      path: pixelHit.component.path,
+      type: pixelHit.component.type,
+      depth: pixelHit.component.depth,
       selector: options.selector,
       rect: options.rect,
       html: options.html,
       image: options.image,
-      source: best.component.source,
-      score: best.score,
+      source: pixelHit.component.source,
+      score: pixelHit.score,
     })
+    pkg.method = 'pixels'
+    if (listed.length) pkg.candidates = listed
+    return pkg
   }
+
   const path = `${options.pageId}/crop`
-  return createSelectionPackage({
+  const pkg = createSelectionPackage({
     pageId: options.pageId,
     path,
     type: 'crop',
@@ -65,6 +102,13 @@ export function finishCrop(options: {
     html: options.html,
     image: options.image,
   })
+  pkg.method = 'none'
+  if (listed.length) pkg.candidates = listed
+  return pkg
+}
+
+function round(value: number): number {
+  return Math.round(value * 1000) / 1000
 }
 
 export function startCrop(options: {

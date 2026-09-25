@@ -1,5 +1,40 @@
 # Review progress
 
+## 2026-09-25 accuracy and integration pass
+
+Measured first: 60 tags, crops at offset 19,11 on grey, v1 carrier — 12/30 crops
+named the wrong tag at 0.66–0.86 confidence. Causes and fixes:
+
+1. **Carrier capacity.** v1 used 3 waves from 150 frequency triples and the scanner
+   searches shift, which frees the phases. Pattern v2 (`PATTERN_VERSION = 2`) uses 12
+   waves from 108 2-D vectors (≤ 7 cycles/tile). v1 stays decodable
+   (`patternVersion: 1`, `--pattern-version 1`).
+2. **v2 needs shift-invariant decoding.** The 8px coarse grid lands off the ~2px peak.
+   `src/spectral.ts` folds modulo the tile (luma-edge mask, per-region mean removal)
+   and searches all cyclic shifts from the DFT bins. Used by the browser analyser
+   (whole crop) and CLI (sliding 2T windows).
+   Synthetic, alpha 3/255, 120 cases over 1×/2×, text noise, nesting: 0 wrong, 0 missed;
+   true ≥ 0.63 (nested) / ≥ 0.93 (flat), unrelated ≤ 0.40. Thresholds: 0.5 (v2), 0.7 (v1).
+3. **`intensity` was a no-op** (alpha fixed at 3). It now sets alpha = round(intensity × 50).
+4. **Crop used pixels when layout was available.** Crop now names the tag from geometry
+   (`method: "dom"`, `candidates`); pixel decode is opt-in cross-check (`verifyPixels`).
+5. **Crop slice ignored `<body>` offset and DPR.** Fixed (`sliceGeometry`), device-resolution crops.
+6. **Tags added after mount never got carriers; host DOM was mutated.** Carriers moved
+   to one overlay layer with Mutation/Resize observers; no host restyling, `<img>` works,
+   clipped by overflow ancestors, snapped to device pixels.
+7. **Repeated tags shared one carrier.** `name[n]` indexing and `data-pp-key`.
+8. **No receiver for `endpoint`.** `pixelprovenance-receive` (CORS + Private Network Access).
+
+Also: small tags get an automatic 32px tile; the IIFE global `PixelProvenance` was
+overwritten by Vite's `var` (renamed build global); DevTag double-paint guard kept.
+
+Real browser (`npm run e2e:browser`, Chromium via Playwright): real 1×/2× screenshots of a
+chip, list rows, keyed row and card decode to the right path through the CLI; drop-in crop
+names the right tag with device-resolution image; cluso plugin checks pass. 36/36.
+
+Known limit: controls under ~48px on a side decode weakly from pixels (≈2k carrier pixels);
+layout covers them in-page.
+
 Reviewed against the local checkout on 2026-09-04. This is an ongoing review,
 not a claim that every product flow has been verified.
 

@@ -10,14 +10,18 @@ import {
   DEFAULT_INTENSITY,
   DEFAULT_PATTERN_SIZE,
   HIERARCHY_SCORE_MARGIN,
+  PATTERN_VERSION,
   comparePatterns,
   createPatternPayload,
   generatePattern,
+  patternWaves,
   rankByHierarchy,
   resolvePatternSize,
   type ComponentDescriptor,
   type PatternMatrix,
+  type PatternVersion,
 } from '../src/pattern.js'
+import { detectSpectral, spectralCost } from '../src/spectral.js'
 
 const MAX_IMAGE_BYTES = 100 * 1024 * 1024
 const MAX_IMAGE_PIXELS = 25_000_000
@@ -26,6 +30,17 @@ const MAX_REGISTRY_ENTRIES = 512
 const MAX_SCALES = 4
 const MAX_PATTERN_SAMPLES = 4_000_000
 const MAX_CORRELATION_SAMPLES = 500_000_000
+/** v1 carriers need 0.7; v2 carriers separate at 0.5 (unrelated ≤ ~0.4). */
+const DEFAULT_THRESHOLD_V1 = 0.7
+const DEFAULT_THRESHOLD_V2 = 0.5
+
+function isV2(component: ComponentDescriptor): boolean {
+  return (component.patternVersion ?? PATTERN_VERSION) === 2
+}
+
+export function defaultThreshold(components: ComponentDescriptor[]): number {
+  return components.every(isV2) ? DEFAULT_THRESHOLD_V2 : DEFAULT_THRESHOLD_V1
+}
 
 export interface RegistryEntry extends ComponentDescriptor {
   pattern: PatternMatrix
@@ -133,7 +148,10 @@ function assertComponents(components: ComponentDescriptor[]): void {
       (component.patternSize !== undefined &&
         (!Number.isFinite(component.patternSize) ||
           component.patternSize < 16 ||
-          component.patternSize > 256))
+          component.patternSize > 256)) ||
+      (component.patternVersion !== undefined &&
+        component.patternVersion !== 1 &&
+        component.patternVersion !== 2)
     ) {
       throw new TypeError(`Invalid component descriptor at registry index ${index}`)
     }
@@ -203,6 +221,7 @@ export function buildRegistry(
       createPatternPayload(component),
       sizes[index],
       intensity,
+      component.patternVersion,
     ),
   }))
 }
@@ -484,13 +503,25 @@ export function decodePng(
   }
 
   const png = readPng(pngData)
+  const threshold = options.threshold ?? defaultThreshold(components)
+  const spectralComponents = components.filter(isV2)
+  const scannedComponents = components.filter((component) => !isV2(component))
 
   let totalCorrelationSamples = 0
   for (const scale of scales) {
     if (!Number.isFinite(scale) || scale < 0.25 || scale > 2) {
       throw new RangeError('Screenshot scales must be between 0.25 and 2')
     }
-    for (const component of components) {
+    const spectralSizes = new Map<number, number>()
+    for (const component of spectralComponents) {
+      const tileSize = Math.round(resolvePatternSize(component, baseSize) * scale)
+      if (tileSize < 16 || tileSize > 512 || png.width < tileSize || png.height < tileSize) continue
+      spectralSizes.set(tileSize, (spectralSizes.get(tileSize) ?? 0) + 1)
+    }
+    for (const [tileSize, count] of spectralSizes) {
+      totalCorrelationSamples += spectralCost(png.width, png.height, tileSize, count, 'sliding')
+    }
+    for (const component of scannedComponents) {
       const componentBase = resolvePatternSize(component, baseSize)
       const tileSize = Math.round(componentBase * scale)
       if (tileSize < 16 || tileSize > 512 || png.width < tileSize || png.height < tileSize) {
@@ -510,10 +541,44 @@ export function decodePng(
     )
   }
 
+  const keep = (result: ScanResult) => {
+    const existing = merged.get(result.path)
+    if (
+      !existing ||
+      result.score > existing.score ||
+      (result.score === existing.score && result.count > existing.count) ||
+      (result.score === existing.score &&
+        result.count === existing.count &&
+        result.tileSize < existing.tileSize)
+    ) {
+      merged.set(result.path, result)
+    }
+  }
+
+  // v2: shift-invariant spectral detection in sliding 2T windows.
+  for (const scale of scales) {
+    const bySize = new Map<number, ComponentDescriptor[]>()
+    for (const component of spectralComponents) {
+      const tileSize = Math.round(resolvePatternSize(component, baseSize) * scale)
+      if (tileSize < 16 || tileSize > 512 || png.width < tileSize || png.height < tileSize) continue
+      bySize.set(tileSize, [...(bySize.get(tileSize) ?? []), component])
+    }
+    for (const [tileSize, batch] of bySize) {
+      const results = detectSpectral(png.data, png.width, png.height, tileSize, batch.map((component) => {
+        const payload = createPatternPayload(component)
+        return { waves: patternWaves(payload), pattern: generatePattern(payload, tileSize, intensity, 2) }
+      }), { mode: 'sliding', threshold })
+      batch.forEach((component, index) => {
+        if (results[index].score < threshold) return
+        keep({ ...component, score: results[index].score, count: results[index].count, tileSize })
+      })
+    }
+  }
+
   for (const scale of scales) {
     // Group by effective 1× size so mixed hierarchy tiles stay uniform per batch.
     const byBaseSize = new Map<number, ComponentDescriptor[]>()
-    for (const component of components) {
+    for (const component of scannedComponents) {
       const componentBase = resolvePatternSize(component, baseSize)
       const batch = byBaseSize.get(componentBase)
       if (batch) batch.push(component)
@@ -536,32 +601,20 @@ export function decodePng(
           .slice(start, start + batchSize)
           .map((component) => ({
             ...component,
-            pattern: generatePattern(createPatternPayload(component), tileSize, intensity),
+            pattern: generatePattern(createPatternPayload(component), tileSize, intensity, component.patternVersion),
           }))
         const results = scanPixels(png.data, png.width, png.height, registry, {
           threshold: options.threshold,
           step: options.step !== undefined ? options.step * scale : undefined,
         })
 
-        for (const result of results) {
-          const existing = merged.get(result.path)
-          if (
-            !existing ||
-            result.score > existing.score ||
-            (result.score === existing.score && result.count > existing.count) ||
-            (result.score === existing.score &&
-              result.count === existing.count &&
-              result.tileSize < existing.tileSize)
-          ) {
-            merged.set(result.path, result)
-          }
-        }
+        for (const result of results) keep(result)
       }
     }
   }
 
   return rankByHierarchy([...merged.values()], {
-    threshold: options.threshold ?? 0.7,
+    threshold,
     margin: HIERARCHY_SCORE_MARGIN,
   })
 }
@@ -631,12 +684,19 @@ function readComponents(registryPath: string): ComponentDescriptor[] {
       throw new Error(`Invalid patternSize at registry index ${index}`)
     }
 
+    const patternVersionValue =
+      'patternVersion' in component ? component.patternVersion : undefined
+    if (patternVersionValue !== undefined && patternVersionValue !== 1 && patternVersionValue !== 2) {
+      throw new Error(`Invalid patternVersion at registry index ${index}`)
+    }
+
     return {
       path: component.path,
       type: component.type,
       depth: component.depth,
       source,
       patternSize,
+      ...(patternVersionValue !== undefined ? { patternVersion: patternVersionValue } : {}),
     }
   })
 
@@ -652,10 +712,11 @@ interface CliOptions {
   intensity?: number
   scales?: number[]
   step?: number
+  patternVersion?: PatternVersion
   json: boolean
 }
 
-const CLI_USAGE = 'Usage: pixelprovenance-decode <image.png> --registry <components.json> [--threshold 0.7] [--pattern-size 64] [--intensity 0.12] [--scale auto|1|2] [--step pixels] [--json]'
+const CLI_USAGE = 'Usage: pixelprovenance-decode <image.png> --registry <components.json> [--threshold 0.5 (v2) | 0.7 (v1)] [--pattern-size 64] [--intensity 0.12] [--scale auto|1|2] [--step pixels] [--pattern-version 1|2] [--json]'
 
 function readFlag(args: string[], flag: string): string | undefined {
   const index = args.indexOf(flag)
@@ -677,6 +738,7 @@ function parseCli(args: string[]): CliOptions {
     '--intensity',
     '--scale',
     '--step',
+    '--pattern-version',
   ])
   const positional: string[] = []
 
@@ -715,8 +777,15 @@ function parseCli(args: string[]): CliOptions {
     intensity: parseNumber(readFlag(args, '--intensity'), '--intensity'),
     scales,
     step: parseNumber(readFlag(args, '--step'), '--step'),
+    patternVersion: parsePatternVersion(readFlag(args, '--pattern-version')),
     json: args.includes('--json'),
   }
+}
+
+function parsePatternVersion(value: string | undefined): PatternVersion | undefined {
+  if (value === undefined) return undefined
+  if (value === '1' || value === '2') return Number(value) as PatternVersion
+  throw new Error('--pattern-version must be 1 or 2')
 }
 
 function runCli(args: string[]): number {
@@ -732,7 +801,12 @@ function runCli(args: string[]): number {
       throw new Error(`PNG exceeds the ${MAX_IMAGE_BYTES / 1024 / 1024} MB input limit`)
     }
 
-    const components = readComponents(options.registryPath)
+    // Entries without their own patternVersion use the CLI flag (legacy v1 screenshots).
+    const components = readComponents(options.registryPath).map((component) =>
+      component.patternVersion === undefined && options.patternVersion !== undefined
+        ? { ...component, patternVersion: options.patternVersion }
+        : component,
+    )
     const results = decodePng(readFileSync(options.imagePath), components, options)
 
     if (options.json) {

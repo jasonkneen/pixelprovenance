@@ -83,4 +83,36 @@ describe('finishCrop', () => {
     expect(pkg.type).toBe('crop')
     expect(pkg.score).toBeUndefined()
   })
+
+  it('prefers the DOM subject and reports pixel agreement when asked', () => {
+    const candidate = {
+      path: 'pricing/cta',
+      type: 'button',
+      depth: 2,
+      selector: '[data-pp="cta"]',
+      source: CTA.source,
+      coverage: 1,
+      iou: 0.6,
+    }
+    const pkg = finishCrop({
+      pageId: 'pricing',
+      rect: { x: 80, y: 420, w: 64, h: 64 },
+      image: 'data:image/png;base64,QQ==',
+      html: '<span>inner</span>',
+      selector: 'span',
+      candidates: [candidate],
+      matches: [{ component: CTA, score: 0.91, x: 0, y: 0, tileSize: 64 }],
+      threshold: 0.5,
+    })
+    expect(pkg).toMatchObject({
+      method: 'dom',
+      path: 'pricing/cta',
+      selector: '[data-pp="cta"]',
+      source: CTA.source,
+      pixel: { path: 'pricing/cta', score: 0.91, agrees: true },
+    })
+    expect(pkg.score).toBeUndefined()
+    expect(pkg.candidates?.[0]).not.toHaveProperty('element')
+  })
 })
+

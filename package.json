@@ -19,10 +19,20 @@
       "types": "./dist/src/dropin/index.d.ts",
       "import": "./dist/src/dropin/index.js"
     },
-    "./pixelprovenance-dropin.js": "./dist/pixelprovenance-dropin.js"
+    "./pixelprovenance-dropin.js": "./dist/pixelprovenance-dropin.js",
+    "./cluso": {
+      "types": "./dist/src/cluso/index.d.ts",
+      "import": "./dist/src/cluso/index.js"
+    },
+    "./pixelprovenance-cluso.js": "./dist/pixelprovenance-cluso.js",
+    "./receive": {
+      "types": "./dist/server/receive.d.ts",
+      "import": "./dist/server/receive.js"
+    }
   },
   "bin": {
-    "pixelprovenance-decode": "dist/decoder/decode.js"
+    "pixelprovenance-decode": "dist/decoder/decode.js",
+    "pixelprovenance-receive": "dist/server/receive.js"
   },
   "scripts": {
     "dev": "vite",
@@ -34,13 +44,16 @@
     "verify:package": "node scripts/verify-package.mjs",
     "build": "npm run build:lib && npm run build:demo",
     "build:demo": "npm run typecheck && vite build",
-    "build:lib": "npm run clean:lib && tsc --project tsconfig.lib.json && npm run build:dropin",
-    "build:dropin": "vite build --config vite.dropin.config.ts",
+    "build:lib": "npm run clean:lib && tsc --project tsconfig.lib.json && npm run build:dropin && npm run build:cluso",
+    "build:dropin": "vite build --config vite.dropin.config.ts && node scripts/banner.mjs pixelprovenance-dropin.js",
     "preview": "vite preview",
     "decode": "tsx decoder/decode.ts",
     "check": "npm run typecheck && npm test && npm run build && npm run verify:package",
     "prepare": "npm run build:lib",
-    "prepublishOnly": "npm run test && npm run build:lib"
+    "prepublishOnly": "npm run test && npm run build:lib",
+    "receive": "tsx server/receive.ts",
+    "build:cluso": "vite build --config vite.cluso.config.ts && node scripts/banner.mjs pixelprovenance-cluso.js",
+    "e2e:browser": "python3 scripts/browser-e2e.py"
   },
   "dependencies": {
     "html-to-image": "^1.11.13",

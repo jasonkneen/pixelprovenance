@@ -24,6 +24,7 @@ Choose the encode path:
 - Default: drop-in + `data-pp` on existing markup.
 - React wrappers: `DevTag` / `DevTagRoot` only if the user wants component wrappers.
 - Combining is allowed: DevTag for encode, drop-in for the toolbar. Drop-in skips nodes that already have a signal child.
+- Host already runs cluso-inspector: do not add a second toolbar. Load `dist/pixelprovenance-cluso.js` (before or after `cluso-inspector.js`) with `data-pp-page`, or `ClusoInspector.use(pixelprovenancePlugin(), { pageId })` from `pixelprovenance/cluso`. Comments then carry the `data-pp` path and source.
 
 ### 2. Install the package
 
@@ -57,7 +58,8 @@ Rules:
 - Mount once.
 - `enabled` / `data-pp-enabled` must be a dev flag, not production-on.
 - `pageId` is a stable slug (`pricing`, `dashboard`), not a URL.
-- `endpoint` is optional. Use it when the user named a worker URL. Otherwise listen for the window event.
+- `endpoint` is optional. Use it when the user named a worker URL. Otherwise listen for the window event. For a quick local receiver: `npx pixelprovenance-receive` (default `http://127.0.0.1:8787/package`).
+- Repeated items (list rows, cards in a grid) get `name[0]`, `name[1]`… automatically; add `data-pp-key="<id>"` when their order can change.
 
 ### 4. Mark regions
 

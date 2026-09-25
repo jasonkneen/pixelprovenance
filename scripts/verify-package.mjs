@@ -55,9 +55,10 @@ const consumerProgram = String.raw`
   } from 'pixelprovenance'
   import { decodePng } from 'pixelprovenance/decode'
   import { mount } from 'pixelprovenance/dropin'
+  import { createReceiver } from 'pixelprovenance/receive'
   import { renderToStaticMarkup } from 'react-dom/server'
 
-  if (typeof DevTag !== 'function' || typeof decodePng !== 'function' || typeof mount !== 'function') {
+  if (typeof DevTag !== 'function' || typeof decodePng !== 'function' || typeof mount !== 'function' || typeof createReceiver !== 'function') {
     throw new Error('Public package exports are missing')
   }
 

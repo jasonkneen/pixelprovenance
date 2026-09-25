@@ -1,9 +1,10 @@
 import { analyzeScreenshot } from '../demo-analysis.js'
 import { DEFAULT_PATTERN_SIZE } from '../pattern.js'
-import { defaultCaptureElement, defaultCaptureRoot, sliceCanvas } from './capture.js'
+import { defaultCaptureElement, defaultCaptureRoot, pageBox, sliceCanvas } from './capture.js'
 import { finishCrop, startCrop } from './crop.js'
 import { isDropinEnabled } from './enabled.js'
-import { collectCodebook, cssSelectorFor, resolveIdentity } from './identity.js'
+import { buildIdentityIndex, collectCodebook, cssSelectorFor, descriptorFor } from './identity.js'
+import { locateCrop } from './locate.js'
 import { createSelectionPackage } from './package.js'
 import { startPicker } from './picker.js'
 import { applySignals } from './signal.js'
@@ -11,7 +12,8 @@ import { removeToolbarStyles, renderToolbar, type ToolbarHandles } from './toolb
 import { deliverPackage } from './transport.js'
 import type { SelectionPackage, SelectionRect } from './types.js'
 
-const MATCH_THRESHOLD = 0.42
+// v2 carriers: true matches ≥ ~0.6 even nested, unrelated tags ≤ ~0.4.
+const MATCH_THRESHOLD = 0.5
 const DEFAULT_INTENSITY = 0.06
 
 export interface MountOptions {
@@ -21,6 +23,12 @@ export interface MountOptions {
   intensity?: number
   patternSize?: number
   debug?: boolean
+  /**
+   * Also decode the crop's pixels in-page and report whether they agree with
+   * the DOM subject. Off by default: layout already names the element exactly,
+   * and decoding costs a full-page render plus correlation.
+   */
+  verifyPixels?: boolean
   root?: ParentNode
   captureElement?: (element: HTMLElement) => Promise<string>
   captureRoot?: (root: HTMLElement) => Promise<HTMLCanvasElement>
@@ -55,7 +63,7 @@ function captureRootElement(): HTMLElement {
 }
 
 async function packagePickedElement(element: HTMLElement, options: MountOptions): Promise<void> {
-  const identity = resolveIdentity(element, options.pageId)
+  const identity = buildIdentityIndex(hostRoot(options), options.pageId).identify(element)
   const rect = element.getBoundingClientRect()
   const capture = options.captureElement ?? defaultCaptureElement
   const image = await capture(element)
@@ -75,32 +83,36 @@ async function packagePickedElement(element: HTMLElement, options: MountOptions)
 }
 
 async function packageCrop(rect: SelectionRect, options: MountOptions): Promise<void> {
+  const index = buildIdentityIndex(hostRoot(options), options.pageId)
+  const candidates = locateCrop(rect, index, { x: window.scrollX, y: window.scrollY })
   const root = captureRootElement()
   const capture = options.captureRoot ?? defaultCaptureRoot
   const canvas = await capture(root)
-  const sliced = sliceCanvas(canvas, rect, {
-    width: root.scrollWidth || window.innerWidth,
-    height: root.scrollHeight || window.innerHeight,
-  })
-  const codebook = collectCodebook(hostRoot(options), options.pageId)
-  const matches = codebook.length === 0
-    ? []
-    : analyzeScreenshot(sliced.data, sliced.width, sliced.height, codebook, {
-      intensity: options.intensity ?? DEFAULT_INTENSITY,
-      patternSize: options.patternSize ?? DEFAULT_PATTERN_SIZE,
-      scales: [1, 2],
-      threshold: MATCH_THRESHOLD,
-    })
+  const sliced = sliceCanvas(canvas, rect, pageBox(root))
+  let matches: ReturnType<typeof analyzeScreenshot> | undefined
+  if (options.verifyPixels || candidates.length === 0) {
+    const codebook = index.tagged.map((node) =>
+      descriptorFor(node, index.identify(node), options.patternSize ?? DEFAULT_PATTERN_SIZE))
+    matches = codebook.length === 0
+      ? []
+      : analyzeScreenshot(sliced.data, sliced.width, sliced.height, codebook, {
+        intensity: options.intensity ?? DEFAULT_INTENSITY,
+        patternSize: options.patternSize ?? DEFAULT_PATTERN_SIZE,
+        scales: [Math.min(2, Math.max(1, Math.round(sliced.scale)))],
+        threshold: MATCH_THRESHOLD,
+      })
+  }
   const centerX = rect.x + rect.w / 2 - window.scrollX
   const centerY = rect.y + rect.h / 2 - window.scrollY
   const under = document.elementFromPoint(centerX, centerY)
-  const target = under instanceof HTMLElement ? under : root
+  const target = under instanceof HTMLElement && !under.closest('[data-pp-toolbar]') ? under : root
   const pkg = finishCrop({
     pageId: options.pageId,
     rect,
     image: sliced.image,
     html: target.outerHTML,
     selector: cssSelectorFor(target),
+    candidates,
     matches,
     threshold: MATCH_THRESHOLD,
   })
@@ -159,7 +171,11 @@ export function mount(options: MountOptions): PixelProvenanceApi {
     hostname: typeof location === 'undefined' ? '' : location.hostname,
     flag: undefined,
   })
-  if (!enabled || typeof document === 'undefined') return getApi()
+  if (!enabled || typeof document === 'undefined') {
+    // Still expose the API so a disabled page can mount on demand.
+    if (typeof window !== 'undefined') window.PixelProvenance = getApi()
+    return getApi()
+  }
 
   const toolbar = renderToolbar({
     onSelect: beginSelect,
@@ -201,7 +217,11 @@ function getApi(): PixelProvenanceApi {
     onPackage: deliverPackage.subscribe,
     exportRegistry: () => {
       if (!session) return []
-      return collectCodebook(hostRoot(session.options), session.options.pageId)
+      return collectCodebook(
+        hostRoot(session.options),
+        session.options.pageId,
+        session.options.patternSize ?? DEFAULT_PATTERN_SIZE,
+      )
     },
   }
 }
@@ -217,6 +237,7 @@ export function configFromScript(script: HTMLScriptElement): MountOptions {
     intensity: script.dataset.ppIntensity ? Number(script.dataset.ppIntensity) : undefined,
     patternSize: script.dataset.ppPatternSize ? Number(script.dataset.ppPatternSize) : undefined,
     debug: script.dataset.ppDebug === 'true',
+    verifyPixels: script.dataset.ppVerifyPixels === 'true',
   }
 }
 

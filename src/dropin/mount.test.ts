@@ -90,3 +90,11 @@ describe('mount', () => {
     expect(captureElement).not.toHaveBeenCalled()
   })
 })
+
+describe('window API', () => {
+  it('exposes the documented API whether or not the toolbar is enabled', () => {
+    mount({ pageId: 'pricing', enabled: false })
+    expect(typeof window.PixelProvenance?.exportRegistry).toBe('function')
+    expect(typeof window.PixelProvenance?.crop).toBe('function')
+  })
+})

@@ -7,6 +7,7 @@ import {
   createPatternPayload,
   generatePattern,
   generatePatternRgba,
+  intensityToAlpha,
   isPathAncestor,
   pathDepth,
   rankByHierarchy,
@@ -34,17 +35,17 @@ describe('frequency pattern engine', () => {
       depth: 1,
     })
 
-    expect(generatePattern(payload, 16, 0.12)[0]).toEqual([
+    expect(generatePattern(payload, 16, 0.12, 1)[0]).toEqual([
       236, 242, 240, 235, 247, 232, 243, 242,
       233, 248, 233, 241, 242, 236, 242, 240,
     ])
   })
 
-  it('keeps the browser signal close to one percent per pixel', () => {
+  it('keeps the default browser signal close to one percent per pixel', () => {
     const rgba = generatePatternRgba(
       createPatternPayload(component),
       16,
-      0.12,
+      0.06,
     )
 
     expect(rgba[3]).toBe(3)
@@ -54,6 +55,37 @@ describe('frequency pattern engine', () => {
       expect(luma).toBeGreaterThanOrEqual(127.5)
       expect(luma).toBeLessThanOrEqual(128.5)
     }
+  })
+
+  it('uses intensity as the on-screen alpha control', () => {
+    const payload = createPatternPayload(component)
+    expect(intensityToAlpha(0.06)).toBe(3)
+    expect(generatePatternRgba(payload, 16, 0.1)[3]).toBe(5)
+    expect(generatePatternRgba(payload, 16, 0.2)[3]).toBe(10)
+    // Chroma shape does not depend on intensity; only opacity does.
+    const low = generatePatternRgba(payload, 16, 0.06)
+    const high = generatePatternRgba(payload, 16, 0.2)
+    expect(low.filter((_, index) => index % 4 === 0)).toEqual(
+      high.filter((_, index) => index % 4 === 0),
+    )
+  })
+
+  it('keeps v2 carriers for different paths near-orthogonal at every cyclic shift', () => {
+    const size = 64
+    const patterns = Array.from({ length: 40 }, (_, index) =>
+      generatePattern(createPatternPayload({ path: `page/list/item-${index}`, type: 'div', depth: 3 }), size),
+    )
+    const shifted = (matrix: number[][], dx: number, dy: number) =>
+      matrix.map((_, y) => matrix[0].map((__, x) => matrix[(y + dy) % size][(x + dx) % size]))
+    let worst = 0
+    for (let first = 0; first < 12; first += 1) {
+      for (let second = first + 1; second < patterns.length; second += 1) {
+        for (const [dx, dy] of [[0, 0], [7, 3], [19, 11], [32, 32], [50, 5]]) {
+          worst = Math.max(worst, comparePatterns(patterns[first], shifted(patterns[second], dx, dy)))
+        }
+      }
+    }
+    expect(worst).toBeLessThan(0.42)
   })
 
   it('renders no browser carrier at zero intensity', () => {

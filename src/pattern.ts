@@ -21,6 +21,8 @@ export interface ComponentDescriptor {
    * Not part of the pattern seed (size is a render parameter).
    */
   patternSize?: number
+  /** Carrier generation used when encoding. Defaults to the current version. */
+  patternVersion?: PatternVersion
 }
 
 export type PatternMatrix = number[][]
@@ -223,18 +225,112 @@ function samplePattern(
   return Math.min(255, Math.max(0, 245 + variation))
 }
 
+/**
+ * Pattern generations. v1 is the original three-sinusoid carrier, kept so
+ * existing screenshots still decode. v2 is the default: twelve distinct 2-D
+ * frequency vectors drawn from a pool of 108, so carriers with different
+ * vector sets stay near-orthogonal at every shift the decoder searches.
+ */
+export type PatternVersion = 1 | 2
+export const PATTERN_VERSION: PatternVersion = 2
+
+const V2_COMPONENTS = 12
+// Max 7 cycles per axis keeps the carrier below Nyquist for the decoders'
+// 16-samples-per-tile coarse scan.
+const V2_MAX_CYCLES = 7
+const V2_FREQUENCY_POOL: ReadonlyArray<readonly [number, number]> = (() => {
+  const pool: Array<[number, number]> = []
+  for (let fx = 0; fx <= V2_MAX_CYCLES; fx += 1) {
+    for (let fy = -V2_MAX_CYCLES; fy <= V2_MAX_CYCLES; fy += 1) {
+      // One vector per ± pair, and nothing so slow it looks like a gradient.
+      if (fx === 0 && fy <= 0) continue
+      if (Math.max(Math.abs(fx), Math.abs(fy)) < 2) continue
+      pool.push([fx, fy])
+    }
+  }
+  return pool
+})()
+
+interface PatternV2Parameters {
+  waves: Array<{ fx: number; fy: number; phase: number }>
+}
+
+function mulberry32(seed: number): () => number {
+  let state = seed >>> 0
+  return () => {
+    state = (state + 0x6d2b79f5) | 0
+    let t = Math.imul(state ^ (state >>> 15), 1 | state)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+function createPatternV2Parameters(payload: string): PatternV2Parameters {
+  const random = mulberry32(hashString(payload))
+  const pool = [...V2_FREQUENCY_POOL]
+  const waves: PatternV2Parameters['waves'] = []
+  for (let index = 0; index < V2_COMPONENTS; index += 1) {
+    const pick = index + Math.floor(random() * (pool.length - index))
+    ;[pool[index], pool[pick]] = [pool[pick], pool[index]]
+    waves.push({ fx: pool[index][0], fy: pool[index][1], phase: random() * Math.PI * 2 })
+  }
+  return { waves }
+}
+
+/** The v2 carrier's waves (cycles per tile + phase), for spectral decoding. */
+export function patternWaves(payload: string): Array<{ fx: number; fy: number; phase: number }> {
+  return createPatternV2Parameters(payload).waves.map((wave) => ({ ...wave }))
+}
+
+/** v2 carrier sample in [-1, 1]; roughly 0.6 standard deviation, lightly clipped so 8-bit alpha keeps more swing. */
+function samplePatternV2(parameters: PatternV2Parameters, size: number, x: number, y: number): number {
+  let sum = 0
+  for (const wave of parameters.waves) {
+    sum += Math.sin(((wave.fx * x + wave.fy * y) / size) * Math.PI * 2 + wave.phase)
+  }
+  const normalized = sum / Math.sqrt(parameters.waves.length / 2) / 1.6
+  return Math.max(-1, Math.min(1, normalized))
+}
+
+/** v1 carrier sample in [-1, 1], derived from the legacy byte value. */
+function sampleNormalizedV1(parameters: PatternParameters, size: number, x: number, y: number, strength: number): number {
+  if (strength === 0) return 0
+  const value = samplePattern(parameters, size, x, y, strength)
+  return Math.max(-1, Math.min(1, (value - 245) / (strength * 255 * 0.5)))
+}
+
+/**
+ * Per-pixel alpha for the browser carrier. `intensity` is the visibility
+ * control: 0.06 → 3/255 (≈1%), 0.1 → 5/255, 1 → 50/255.
+ */
+export function intensityToAlpha(intensity: number): number {
+  const strength = clampIntensity(intensity)
+  if (strength === 0) return 0
+  return Math.max(1, Math.round(strength * 50))
+}
+
 export function generatePattern(
   payload: string,
   patternSize = DEFAULT_PATTERN_SIZE,
   intensity = DEFAULT_INTENSITY,
+  version: PatternVersion = PATTERN_VERSION,
 ): PatternMatrix {
   const size = normalizeGeneratedPatternSize(patternSize)
-  const strength = clampIntensity(intensity)
-  const parameters = createPatternParameters(payload)
-
+  if (version === 1) {
+    const strength = clampIntensity(intensity)
+    const parameters = createPatternParameters(payload)
+    return Array.from({ length: size }, (_, y) =>
+      Array.from({ length: size }, (_, x) =>
+        samplePattern(parameters, size, x, y, strength),
+      ),
+    )
+  }
+  // Decoders use Pearson correlation, so the matrix scale is arbitrary and
+  // independent of intensity (which only sets on-screen alpha).
+  const parameters = createPatternV2Parameters(payload)
   return Array.from({ length: size }, (_, y) =>
     Array.from({ length: size }, (_, x) =>
-      samplePattern(parameters, size, x, y, strength),
+      Math.round(128 + samplePatternV2(parameters, size, x, y) * 100),
     ),
   )
 }
@@ -243,33 +339,31 @@ export function generatePatternRgba(
   payload: string,
   patternSize = DEFAULT_PATTERN_SIZE,
   intensity = DEFAULT_INTENSITY,
+  version: PatternVersion = PATTERN_VERSION,
 ): Uint8ClampedArray {
   const size = normalizeGeneratedPatternSize(patternSize)
   const strength = clampIntensity(intensity)
-  const parameters = createPatternParameters(payload)
+  const alpha = intensityToAlpha(strength)
+  const v1 = version === 1 ? createPatternParameters(payload) : null
+  const v2 = version === 1 ? null : createPatternV2Parameters(payload)
   const rgba = new Uint8ClampedArray(size * size * 4)
 
   for (let y = 0; y < size; y += 1) {
     for (let x = 0; x < size; x += 1) {
       const offset = (y * size + x) * 4
-      const value = samplePattern(parameters, size, x, y, strength)
+      const normalized = v1
+        ? sampleNormalizedV1(v1, size, x, y, strength)
+        : strength === 0 ? 0 : samplePatternV2(v2!, size, x, y)
       // Put the carrier in a roughly luminance-neutral red/cyan axis. Human
       // vision is considerably less sensitive to this faint chroma variation
       // than to light/dark banding, while a decoder can isolate R-(G+B)/2.
-      const normalized = strength === 0
-        ? 0
-        : Math.max(
-            -1,
-            Math.min(1, (value - 245) / (strength * 255 * 0.5)),
-          )
       const chroma = Math.round(normalized * 112)
       rgba[offset] = Math.min(255, Math.max(0, 128 + chroma))
       rgba[offset + 1] = Math.min(255, Math.max(0, 128 - chroma / 2))
       rgba[offset + 2] = Math.min(255, Math.max(0, 128 - chroma / 2))
-      // Keep each pixel close to one percent opacity. The structure is recovered
-      // by correlating many pixels across a region, not by making any single
-      // pixel visibly noisy.
-      rgba[offset + 3] = strength === 0 ? 0 : 3
+      // Low opacity: the structure is recovered by correlating many pixels
+      // across a region, not by making any single pixel visibly noisy.
+      rgba[offset + 3] = alpha
     }
   }
 

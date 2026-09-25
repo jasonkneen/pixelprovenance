@@ -55,9 +55,10 @@ Mount once from a client-only root. Next.js: `'use client'` wrapper. Do not impo
 | `data-pp-page` | `pageId` | `page` |
 | `data-pp-endpoint` | POST URL | none |
 | `data-pp-enabled` | `true` / `false` | loopback on, else off |
-| `data-pp-intensity` | number 0–1 | `0.06` |
-| `data-pp-pattern-size` | CSS tile 16–256 | `64` |
-| `data-pp-debug` | `true` | `false` |
+| `data-pp-intensity` | carrier opacity: alpha = round(intensity × 50)/255 | `0.06` (3/255 ≈ 1%) |
+| `data-pp-pattern-size` | default CSS tile 16–256 | `64` |
+| `data-pp-debug` | `true` outlines each carrier | `false` |
+| `data-pp-verify-pixels` | `true` also decodes crop pixels in-page | `false` |
 
 ### Region attributes (on host markup)
 
@@ -66,9 +67,14 @@ Mount once from a client-only root. Next.js: `'use client'` wrapper. Do not impo
 | `data-pp` | Stable path segment. Required for a named region. |
 | `data-pp-type` | Category in the seed. Default: tag name. |
 | `data-pp-source` | `file:line:column` hashed into the pattern. |
-| `data-pp-pattern-size` | Leaf tile size. Use 16–32 on small controls. |
+| `data-pp-key` | Stable key for repeated items: `row[<key>]`. |
+| `data-pp-pattern-size` | Override the tile. Default is automatic: the page default, or 32 when the element's shorter side is under 1.5 tiles. Avoid 16 (resampling blurs it). |
 
-Nested `data-pp` builds `pageId/parent/child`. Click target: deepest `[data-pp]`, else `[data-testid]`, else `[id]`, else the element. The toolbar is marked `data-pp-toolbar` and is not selectable.
+Nested `data-pp` builds `pageId/parent/child`. Same-name siblings under one tagged parent get `name[0]`, `name[1]`… in document order, so list rows get distinct carriers; add `data-pp-key` when order changes. Click target: deepest `[data-pp]`, else `[data-testid]`, else `[id]`, else the element. The toolbar is marked `data-pp-toolbar` and is not selectable.
+
+### Carrier layer
+
+Carriers are painted into one overlay layer (`[data-pp-signal-layer]`, a child of `<body>`), positioned over each tag and clipped by `overflow` ancestors. Host elements are never restyled or given children, so `<img>`/`<input>` tags work and framework reconciliation is untouched. A MutationObserver, ResizeObserver and scroll/resize listeners keep it in step with tags added or moved after mount. Nodes that already have a React `DevTag` signal child are skipped.
 
 ### Global API
 
@@ -78,7 +84,13 @@ After mount, `window.PixelProvenance` has `mount`, `unmount`, `select`, `crop`, 
 
 ## Selection package
 
-`version` is the literal `1`. HTML is truncated to 4000 characters. `score` is set only after a crop decode.
+`version` is the literal `1`. HTML is truncated to 4000 characters.
+
+Crop packages add `method`:
+
+- `dom` — layout names the subject: the best-overlap tag among those covering ≥ 50% of the crop. `candidates` lists up to five overlapping tags with `coverage` and `iou`. With `verifyPixels`, `pixel: { path, score, agrees }` reports the in-page pixel decode.
+- `pixels` — no tag covers the crop, and the pixel decode named one; `score` is its correlation.
+- `none` — nothing matched; `path` is `<pageId>/crop`.
 
 ```json
 {
@@ -104,6 +116,25 @@ Delivery order:
 
 A model should consume this JSON. Do not ask the model to decode the frequency pattern.
 
+### Reference receiver
+
+```bash
+npx pixelprovenance-receive --port 8787 --out .pixelprovenance/inbox
+```
+
+`POST /package` stores `<time>-<path>.json` plus `.png` and `latest.json`, and prints `path  file:line`. `GET /latest` returns the newest package without the image. It answers the CORS and Private Network Access preflight a page on another localhost port sends. Also importable: `import { createReceiver } from 'pixelprovenance/receive'`.
+
+## cluso-inspector plugin
+
+When the host already runs cluso-inspector, add PixelProvenance as a plugin instead of a second toolbar:
+
+```html
+<script src="/pixelprovenance-cluso.js" data-pp-page="pricing"></script>
+<script src="/cluso-inspector.js" data-auto data-endpoint="http://localhost:4747/annotations"></script>
+```
+
+Order does not matter. Or `import { pixelprovenancePlugin } from 'pixelprovenance/cluso'` and `ClusoInspector.use(pixelprovenancePlugin(), { pageId: 'pricing' })`. The plugin paints carriers while the inspector is enabled (toolbar toggle), adds `pixelprovenance: { path, type, source }` plus a Markdown line to each comment target, fills `target.source` from `data-pp-source` when the framework gave none, names the tagged subject of region comments, and attaches `payload.pixelprovenance.registry` so an agent can decode any screenshot of the page.
+
 ## React tags (optional)
 
 ```tsx
@@ -126,6 +157,10 @@ pixelprovenance-decode screenshot.png --registry components.json --json
 
 `--registry` is required. Exit 0 on match, 1 on no match or error. JSON no-match is `[]`.
 
+Carriers are pattern v2 by default: twelve 2-D waves decoded shift-invariantly (fold modulo the tile, DFT at the known bins). Default threshold is 0.5 for v2 (true matches ≥ ~0.6, unrelated tags ≤ ~0.4) and 0.7 when the registry contains v1 entries. Screenshots made before v2 decode with `--pattern-version 1` or `"patternVersion": 1` per registry entry. The cluso plugin's `payload.pixelprovenance.registry` is a ready-made registry.
+
+Tiny controls (under ~48px on a side) hold too few carrier pixels to decode reliably from a screenshot; in-page Select/Crop name them from layout instead.
+
 ## Verify
 
 On localhost:
@@ -133,7 +168,8 @@ On localhost:
 1. Toolbar shows Select, Crop, Cancel.
 2. Select → click a `[data-pp]` node.
 3. A `pixelprovenance:package` event fires with the expected `path`.
-4. If `endpoint` is set, the POST body is that object.
+4. Crop a region inside a tag → `method: "dom"` and that tag's `path`.
+5. If `endpoint` is set, the POST body is that object (`npx pixelprovenance-receive` prints it).
 
 Host tests: keep the overlay behind the host dev flag.
 

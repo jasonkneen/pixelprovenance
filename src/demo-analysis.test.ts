@@ -64,7 +64,7 @@ describe('browser analysis limits', () => {
       .toThrow(/step/)
   })
 
-  it.each([1, 1024])('rejects excessive scan or refinement work at step %s before reading pixels', (step) => {
+  it.each([1, 1024])('rejects excessive v1 scan or refinement work at step %s before reading pixels', (step) => {
     const pixels = new Proxy(new Uint8ClampedArray(1024 * 1024 * 4), {
       get(target, property) {
         if (typeof property === 'string' && /^\d+$/.test(property)) {
@@ -73,7 +73,7 @@ describe('browser analysis limits', () => {
         return Reflect.get(target, property, target)
       },
     })
-    expect(() => analyzeScreenshot(pixels, 1024, 1024, [TARGET], { step }))
+    expect(() => analyzeScreenshot(pixels, 1024, 1024, [{ ...TARGET, patternVersion: 1 }], { step }))
       .toThrow(/computation budget/)
   })
 
@@ -369,5 +369,55 @@ describe('browser screenshot analysis', () => {
       step: 2,
     })
     expect(wrong[0].score).toBeLessThan(0.42)
+  })
+})
+
+describe('v2 spectral analysis', () => {
+  function composite(components: Array<{ descriptor: ComponentDescriptor; x: number; y: number; w: number; h: number }>, width: number, height: number, background = 236) {
+    const data = new Uint8ClampedArray(width * height * 4)
+    const layer = new Float64Array(width * height * 3).fill(background)
+    for (const { descriptor, x: left, y: top, w, h } of components) {
+      const tile = generatePatternRgba(createPatternPayload(descriptor), 64, 0.06)
+      const alpha = tile[3] / 255
+      for (let y = top; y < top + h; y += 1) {
+        for (let x = left; x < left + w; x += 1) {
+          const source = (((y - top) % 64) * 64 + ((x - left) % 64)) * 4
+          for (let channel = 0; channel < 3; channel += 1) {
+            const index = (y * width + x) * 3 + channel
+            layer[index] = layer[index] * (1 - alpha) + tile[source + channel] * alpha
+          }
+        }
+      }
+    }
+    for (let index = 0; index < width * height; index += 1) {
+      for (let channel = 0; channel < 3; channel += 1) data[index * 4 + channel] = Math.round(layer[index * 3 + channel])
+      data[index * 4 + 3] = 255
+    }
+    return data
+  }
+
+  it('names the right tag among 60 at default browser opacity from an off-grid crop', () => {
+    const registry = Array.from({ length: 60 }, (_, index) => ({
+      path: `page/section-${index % 6}/item-${index}`,
+      type: 'div',
+      depth: 3,
+    }))
+    for (const target of registry.slice(0, 12)) {
+      const full = composite([{ descriptor: target, x: 0, y: 0, w: 192, h: 192 }], 192, 192)
+      const crop = new Uint8ClampedArray(128 * 128 * 4)
+      for (let y = 0; y < 128; y += 1) {
+        crop.set(full.subarray(((y + 11) * 192 + 19) * 4, ((y + 11) * 192 + 147) * 4), y * 128 * 4)
+      }
+      const results = analyzeScreenshot(crop, 128, 128, registry, { scales: [1], threshold: 0.5 })
+      expect(results[0].component.path).toBe(target.path)
+      expect(results[0].score).toBeGreaterThan(0.85)
+    }
+  })
+
+  it('keeps unrelated tags below the v2 threshold', () => {
+    const registry = Array.from({ length: 40 }, (_, index) => ({ path: `page/item-${index}`, type: 'div', depth: 2 }))
+    const data = composite([{ descriptor: registry[0], x: 0, y: 0, w: 128, h: 128 }], 128, 128)
+    const results = analyzeScreenshot(data, 128, 128, registry, { scales: [1], threshold: 0 })
+    for (const result of results.slice(1)) expect(result.score).toBeLessThan(0.45)
   })
 })

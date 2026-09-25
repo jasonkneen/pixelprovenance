@@ -5,6 +5,7 @@ export {
   DEFAULT_INTENSITY,
   DEFAULT_PATTERN_SIZE,
   HIERARCHY_SCORE_MARGIN,
+  PATTERN_VERSION,
   clampIntensity,
   clampPatternSize,
   comparePatterns,
@@ -12,6 +13,7 @@ export {
   generatePattern,
   generatePatternRgba,
   hashString,
+  intensityToAlpha,
   isPathAncestor,
   pathDepth,
   rankByHierarchy,
@@ -20,6 +22,7 @@ export {
 export type {
   ComponentDescriptor,
   PatternMatrix,
+  PatternVersion,
   RankableMatch,
   SourceLocation,
 } from './pattern.js'

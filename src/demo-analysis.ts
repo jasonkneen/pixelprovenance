@@ -2,13 +2,16 @@ import {
   DEFAULT_INTENSITY,
   DEFAULT_PATTERN_SIZE,
   HIERARCHY_SCORE_MARGIN,
+  PATTERN_VERSION,
   createPatternPayload,
   generatePattern,
+  patternWaves,
   rankByHierarchy,
   resolvePatternSize,
   type ComponentDescriptor,
   type PatternMatrix,
 } from './pattern.js'
+import { detectSpectral, spectralCost } from './spectral.js'
 
 export interface ScreenshotAnalysisOptions {
   patternSize?: number
@@ -198,6 +201,55 @@ function comparePatch(
   )
 }
 
+/**
+ * Full-resolution chroma correlation over the whole capture, with the tile
+ * repeated cyclically from the best-scoring origin. The carrier tiles across
+ * its element, so every pixel is another look at it; using all of them
+ * averages out the 8-bit posterisation a single sampled tile cannot. Other
+ * content in the capture only dilutes this score, so callers keep the max.
+ */
+function pooledChromaScore(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  originX: number,
+  originY: number,
+  expected: PatternMatrix,
+): number {
+  const tileSize = expected.length
+  const phaseX = originX % tileSize
+  const phaseY = originY % tileSize
+  let observedSum = 0
+  let expectedSum = 0
+  let observedSquareSum = 0
+  let expectedSquareSum = 0
+  let productSum = 0
+  let count = 0
+  for (let y = 0; y < height; y += 1) {
+    const row = expected[(y - phaseY + tileSize) % tileSize]
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y * width + x) * 4
+      if (data[offset + 3] === 0) continue
+      const observed = data[offset] - (data[offset + 1] + data[offset + 2]) / 2
+      const expectedValue = row[(x - phaseX + tileSize) % tileSize]
+      observedSum += observed
+      expectedSum += expectedValue
+      observedSquareSum += observed * observed
+      expectedSquareSum += expectedValue * expectedValue
+      productSum += observed * expectedValue
+      count += 1
+    }
+  }
+  return correlationFromMoments(
+    observedSum,
+    observedSquareSum,
+    expectedSum,
+    expectedSquareSum,
+    productSum,
+    count,
+  )
+}
+
 export function analyzeScreenshot(
   data: Uint8ClampedArray,
   width: number,
@@ -242,7 +294,20 @@ export function analyzeScreenshot(
   // Include both the coarse search and the maximum local refinement area.
   // Preflight all entries so no component starts scanning before the total is known.
   let sampleCount = 0
-  for (const component of components) {
+  const isV2 = (component: ComponentDescriptor) =>
+    (component.patternVersion ?? PATTERN_VERSION) === 2
+  for (const scale of scales) {
+    const v2Sizes = new Map<number, number>()
+    for (const component of components.filter(isV2)) {
+      const tileSize = Math.round(resolvePatternSize(component, fallbackSize) * scale)
+      v2Sizes.set(tileSize, (v2Sizes.get(tileSize) ?? 0) + 1)
+    }
+    for (const [tileSize, count] of v2Sizes) {
+      if (tileSize < 16 || tileSize > 512 || tileSize > width || tileSize > height) continue
+      sampleCount += spectralCost(width, height, tileSize, count, 'whole')
+    }
+  }
+  for (const component of components.filter((component) => !isV2(component))) {
     for (const scale of scales) {
       const tileSize = Math.round(resolvePatternSize(component, fallbackSize) * scale)
       if (tileSize < 16 || tileSize > 512 || tileSize > width || tileSize > height) continue
@@ -252,7 +317,7 @@ export function analyzeScreenshot(
       const coarse = (Math.floor((positionsX - 1) / step) + 1) *
         (Math.floor((positionsY - 1) / step) + 1)
       const refinement = Math.min(positionsX, 2 * step + 1) * Math.min(positionsY, 2 * step + 1)
-      sampleCount += (coarse + refinement) * patchSampleCount(tileSize)
+      sampleCount += (coarse + refinement) * patchSampleCount(tileSize) + width * height
     }
   }
   if (sampleCount > MAX_ANALYSIS_SAMPLES) {
@@ -260,7 +325,41 @@ export function analyzeScreenshot(
   }
   const matches: ScreenshotMatch[] = []
 
-  for (const component of components) {
+  // v2: shift-invariant spectral detection over the whole capture, batched by tile size.
+  const v2Components = components.filter(isV2)
+  const v2Best = new Map<ComponentDescriptor, ScreenshotMatch>(
+    v2Components.map((component) => [component, {
+      component,
+      score: 0,
+      x: 0,
+      y: 0,
+      tileSize: resolvePatternSize(component, fallbackSize),
+    }]),
+  )
+  for (const scale of scales) {
+    const bySize = new Map<number, ComponentDescriptor[]>()
+    for (const component of v2Components) {
+      const tileSize = Math.round(resolvePatternSize(component, fallbackSize) * scale)
+      if (tileSize < 16 || tileSize > 512 || tileSize > width || tileSize > height) continue
+      bySize.set(tileSize, [...(bySize.get(tileSize) ?? []), component])
+    }
+    for (const [tileSize, batch] of bySize) {
+      const results = detectSpectral(data, width, height, tileSize, batch.map((component) => {
+        const payload = createPatternPayload(component)
+        return { waves: patternWaves(payload), pattern: generatePattern(payload, tileSize, intensity, 2) }
+      }), { mode: 'whole', threshold: options.threshold ?? 0 })
+      batch.forEach((component, index) => {
+        const result = results[index]
+        const previous = v2Best.get(component)!
+        if (result.score > previous.score) {
+          v2Best.set(component, { component, score: result.score, x: result.x, y: result.y, tileSize })
+        }
+      })
+    }
+  }
+  matches.push(...v2Best.values())
+
+  for (const component of components.filter((component) => !isV2(component))) {
     const baseSize = resolvePatternSize(component, fallbackSize)
     let best: ScreenshotMatch = {
       component,
@@ -286,6 +385,7 @@ export function analyzeScreenshot(
         createPatternPayload(component),
         tileSize,
         intensity,
+        component.patternVersion,
       )
       const step = Math.max(1, Math.round(options.step ?? tileSize / 8))
       let scaleBest: ScreenshotMatch = {
@@ -317,6 +417,9 @@ export function analyzeScreenshot(
           }
         }
       }
+
+      const pooled = pooledChromaScore(data, width, height, scaleBest.x, scaleBest.y, expected)
+      if (pooled > scaleBest.score) scaleBest = { ...scaleBest, score: pooled }
 
       if (scaleBest.score > best.score) best = scaleBest
     }

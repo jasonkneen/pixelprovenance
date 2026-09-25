@@ -51,7 +51,7 @@ mount({
 })
 ```
 
-Select (click) packages the deepest `[data-pp]`, else `[data-testid]`, else `[id]`. Crop decodes against the live codebook. Both dispatch `pixelprovenance:package` and POST to `endpoint` when set.
+Select (click) packages the deepest `[data-pp]`, else `[data-testid]`, else `[id]`. Crop names the tag it covers from layout (`method: "dom"`), with overlapping `candidates`; `verifyPixels` adds an in-page pixel cross-check. Both dispatch `pixelprovenance:package` and POST to `endpoint` when set.
 
 The toolbar stays off on public hosts unless `data-pp-enabled="true"` or `enabled: true`.
 
@@ -62,9 +62,10 @@ The toolbar stays off on public hosts unless `data-pp-enabled="true"` or `enable
 | `data-pp-page` | Root path segment | `page` |
 | `data-pp-endpoint` | POST URL for the selection package | none |
 | `data-pp-enabled` | `true` / `false` | on for localhost only |
-| `data-pp-intensity` | Signal strength 0–1 | `0.06` |
-| `data-pp-pattern-size` | CSS tile 16–256 | `64` |
+| `data-pp-intensity` | Carrier opacity; alpha = round(intensity × 50)/255 | `0.06` |
+| `data-pp-pattern-size` | Default CSS tile 16–256 | `64` |
 | `data-pp-debug` | Show region borders | `false` |
+| `data-pp-verify-pixels` | Also decode crop pixels in-page | `false` |
 
 ### Region attributes
 
@@ -73,11 +74,16 @@ The toolbar stays off on public hosts unless `data-pp-enabled="true"` or `enable
 | `data-pp` | Stable path segment |
 | `data-pp-type` | Category (default: tag name) |
 | `data-pp-source` | `file:line:column` embedded in the pattern |
-| `data-pp-pattern-size` | Per-region tile; 16–32 for small controls |
+| `data-pp-key` | Stable key for repeated items (`row[<key>]`); otherwise `row[0]`, `row[1]`… |
+| `data-pp-pattern-size` | Override the automatic tile (page default, or 32 on small elements) |
 
 ### Selection package
 
-Dispatched as `pixelprovenance:package` (`event.detail`). Posted to `endpoint` when set. HTML truncated to 4000 characters. `score` is crop-decode only.
+Dispatched as `pixelprovenance:package` (`event.detail`). Posted to `endpoint` when set. HTML truncated to 4000 characters. Crop packages add `method` (`dom` / `pixels` / `none`), `candidates`, and with `verifyPixels` a `pixel` agreement object; `score` is set only when pixels named the path.
+
+Run `npx pixelprovenance-receive` for a local endpoint that stores each package as JSON + PNG and serves `GET /latest`.
+
+With cluso-inspector, load `pixelprovenance-cluso.js` instead of the drop-in; see `docs/llms.txt`.
 
 See `docs/llms.txt` for the full object.
 
@@ -91,7 +97,7 @@ Agents installing this into another app should follow `skills/pixelprovenance/SK
 | --- | --- | --- | --- |
 | `pageId` | `string` | required | Root path segment |
 | `enabled` | `boolean` | development detection | Explicit marker switch |
-| `intensity` | `number` | `0.06` | Pattern signal strength, clamped to 0-1 |
+| `intensity` | `number` | `0.06` | Carrier opacity (alpha = round(intensity × 50)/255), clamped to 0-1 |
 | `patternSize` | `number` | `64` | CSS tile size, clamped to 16-256 |
 | `debug` | `boolean` | `false` | Reveals the tagged region border |
 | `signal` | `boolean` | `true` | Suppresses this boundary's own pattern while retaining its path context |
@@ -157,9 +163,9 @@ Tag a **hierarchy**: parent panels and nested leaves (chips, nav items, rows). E
 }
 ```
 
-Optional `patternSize` is the 1× tile size used when that region was encoded (default 64). Use 16–32 for small leaves so a tight crop can cover a full tile.
+Optional `patternSize` is the 1× tile size used when that region was encoded (default 64). Use 32 for small leaves so a tight crop can cover a full tile; 16px tiles do not survive resampling. Optional `patternVersion` (1 or 2, default 2) selects the carrier generation; screenshots made before v2 need `1`.
 
-The registry settings must match the component settings used for capture. If you change root `patternSize` or `intensity`, pass those values to the decoder.
+The registry must repeat the path, type, depth, source and tile size used for capture. Intensity only sets on-screen opacity, so the decoder does not need it for v2 carriers.
 
 ## Programmatic decoding
 

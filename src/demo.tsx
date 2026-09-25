@@ -775,7 +775,7 @@ export default function App() {
         >
           <span>Research paper · PDF · 15 pages</span>
           <strong>Component identification via frequency-domain encoding</strong>
-          <small>Download the paper <b>PDF</b></small>
+          <small>Download the paper <b>PDF</b> by Jason Kneen</small>
         </a>
         <div className="hero-proof">
           <span>Encoding is on</span>
@@ -955,6 +955,10 @@ export default function App() {
                     </small>
                   </div>
                   <div className="card-topline"><span>Priority project</span><small>3 days left</small></div>
+                  {/* JPEG inside the tagged card. The carrier lives on the card
+                      parent (the DevTag above), not on the <img>, so the
+                      carrier survives the in-page JPEG. */}
+                  <img className="sprint-hero" src="/sample-photo.jpg" alt="Campaign visual" width="320" height="180" />
                   <DevTag id="title" {...embedded('MORROW_DASHBOARD/sprint-overview/title')}
                     className={sourceFocusClass('MORROW_DASHBOARD/sprint-overview/title', 'sprint-title')}>
                     <h4>Summer identity refresh</h4>
@@ -1290,6 +1294,7 @@ export default function App() {
         <div className="site-brand"><BrandMark /><span>PixelProvenance</span></div>
         <p>Experimental developer tooling. Validate capture thresholds against your own browser and screenshot pipeline.</p>
         <a href="https://github.com/jasonkneen/pixelprovenance">View source</a>
+        <small className="site-copyright">© {new Date().getFullYear()} Jason Kneen · CC BY-NC 4.0</small>
       </footer>
     </main>
   )

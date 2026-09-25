@@ -131,8 +131,9 @@ pixelprovenance-decode screenshot.png --registry components.json
 Matches print the component path and the `file:line:column` recovered from the matched embedding. The decoder checks both 1x and 2x tile sizes by default. Advanced options:
 
 ```text
---threshold 0.7
+--threshold 0.5          # v2 default (0.7 when the registry has v1 entries)
 --pattern-size 64
+--pattern-version 1|2    # 1 for screenshots made before pattern v2
 --intensity 0.12
 --scale auto|1|2
 --step 16
@@ -153,13 +154,14 @@ screenshot scale). Larger values reduce grid sampling but enlarge the local
 refinement search and can miss signals. Run
 `pixelprovenance-decode --help` for the option list.
 
-The default grid spacing is one eighth of the tile width. A denser sampled
-search nominates an additional candidate for each component. The decoder
-refines both candidates at individual pixel offsets, then confirms each using
-the full tile. This helps recover crops whose edges do not
-align with the original signal grid. The crop still needs enough pixels for a
-complete tile, and textured content can interfere with detection. All search
-passes count toward the computation limit.
+Pattern v2 carriers (the default) are decoded shift-invariantly: the decoder
+folds each 2-tile window modulo the tile size, skipping edges and removing each
+flat region's mean, then reads the carrier's twelve known frequency bins and
+searches every cyclic shift in frequency space. There is no position grid to
+miss, so off-grid crops, 1×/2× captures, text and coloured backgrounds decode
+at full strength. `--step` applies only to legacy v1 entries, which still use
+the grid search described in earlier releases. The crop still needs at least
+one whole tile in each direction.
 
 ## Package API
 

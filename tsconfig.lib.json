@@ -15,8 +15,11 @@
     "src/index.ts",
     "src/pattern.ts",
     "src/demo-analysis.ts",
+    "src/spectral.ts",
     "src/dropin/**/*.ts",
-    "decoder/decode.ts"
+    "src/cluso/**/*.ts",
+    "decoder/decode.ts",
+    "server/receive.ts"
   ],
   "exclude": ["**/*.test.ts", "**/*.test.tsx", "src/demo.tsx", "node_modules", "dist"]
 }

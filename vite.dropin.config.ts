@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 
+
 export default defineConfig({
   publicDir: false,
   build: {
@@ -7,7 +8,8 @@ export default defineConfig({
     outDir: 'dist',
     lib: {
       entry: 'src/dropin/index.ts',
-      name: 'PixelProvenance',
+      // Not 'PixelProvenance': Vite's IIFE `var` would overwrite the window API mount() sets.
+      name: 'PixelProvenanceDropin',
       formats: ['iife'],
       fileName: () => 'pixelprovenance-dropin.js',
     },
