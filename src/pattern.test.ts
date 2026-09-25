@@ -41,11 +41,12 @@ describe('frequency pattern engine', () => {
     ])
   })
 
-  it('keeps the default browser signal close to one percent per pixel', () => {
+  it('keeps the v2 chroma signal luminance-neutral at one percent per pixel', () => {
     const rgba = generatePatternRgba(
       createPatternPayload(component),
       16,
       0.06,
+      2,
     )
 
     expect(rgba[3]).toBe(3)
@@ -54,6 +55,27 @@ describe('frequency pattern engine', () => {
       const luma = (rgba[offset] + rgba[offset + 1] + rgba[offset + 2]) / 3
       expect(luma).toBeGreaterThanOrEqual(127.5)
       expect(luma).toBeLessThanOrEqual(128.5)
+    }
+  })
+
+  it('puts the v3 luma signal on every channel and leaves chroma at 128', () => {
+    // v3 modulates R = G = B together so the carrier survives JPEG 4:2:0
+    // chroma subsampling. Chroma is constant at 128; luma carries the wave.
+    const rgba = generatePatternRgba(
+      createPatternPayload(component),
+      16,
+      0.06,
+      3,
+    )
+    expect(rgba.every((value, index) => index % 4 !== 3 || value === 3)).toBe(true)
+    for (let offset = 0; offset < rgba.length; offset += 4) {
+      const r = rgba[offset]
+      const g = rgba[offset + 1]
+      const b = rgba[offset + 2]
+      expect(r).toBe(g)
+      expect(g).toBe(b)
+      const chroma = r - (g + b) / 2
+      expect(Math.abs(chroma)).toBeLessThan(0.5)
     }
   })
 

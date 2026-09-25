@@ -38,8 +38,15 @@ function isV2(component: ComponentDescriptor): boolean {
   return (component.patternVersion ?? PATTERN_VERSION) === 2
 }
 
+function isV3(component: ComponentDescriptor): boolean {
+  return (component.patternVersion ?? PATTERN_VERSION) === 3
+}
+
 export function defaultThreshold(components: ComponentDescriptor[]): number {
-  return components.every(isV2) ? DEFAULT_THRESHOLD_V2 : DEFAULT_THRESHOLD_V1
+  // v3 (luma) and v2 (chroma) both decode well at 0.5; v1 needs 0.7.
+  if (components.length === 0) return DEFAULT_THRESHOLD_V2
+  if (components.every((c) => (c.patternVersion ?? PATTERN_VERSION) === 1)) return DEFAULT_THRESHOLD_V1
+  return DEFAULT_THRESHOLD_V2
 }
 
 export interface RegistryEntry extends ComponentDescriptor {
@@ -151,7 +158,8 @@ function assertComponents(components: ComponentDescriptor[]): void {
           component.patternSize > 256)) ||
       (component.patternVersion !== undefined &&
         component.patternVersion !== 1 &&
-        component.patternVersion !== 2)
+        component.patternVersion !== 2 &&
+        component.patternVersion !== 3)
     ) {
       throw new TypeError(`Invalid component descriptor at registry index ${index}`)
     }
@@ -504,8 +512,12 @@ export function decodePng(
 
   const png = readPng(pngData)
   const threshold = options.threshold ?? defaultThreshold(components)
+  // v2 and v3 are both spectral-detected but read different channels:
+  // v2 → chroma (R−(G+B)/2), v3 → luma ((R+G+B)/3). v3's luma path
+  // survives JPEG 4:2:0 chroma subsampling, which destroys v2.
   const spectralComponents = components.filter(isV2)
-  const scannedComponents = components.filter((component) => !isV2(component))
+  const spectralV3Components = components.filter(isV3)
+  const scannedComponents = components.filter((component) => !isV2(component) && !isV3(component))
 
   let totalCorrelationSamples = 0
   for (const scale of scales) {
@@ -518,7 +530,16 @@ export function decodePng(
       if (tileSize < 16 || tileSize > 512 || png.width < tileSize || png.height < tileSize) continue
       spectralSizes.set(tileSize, (spectralSizes.get(tileSize) ?? 0) + 1)
     }
+    const spectralV3Sizes = new Map<number, number>()
+    for (const component of spectralV3Components) {
+      const tileSize = Math.round(resolvePatternSize(component, baseSize) * scale)
+      if (tileSize < 16 || tileSize > 512 || png.width < tileSize || png.height < tileSize) continue
+      spectralV3Sizes.set(tileSize, (spectralV3Sizes.get(tileSize) ?? 0) + 1)
+    }
     for (const [tileSize, count] of spectralSizes) {
+      totalCorrelationSamples += spectralCost(png.width, png.height, tileSize, count, 'sliding')
+    }
+    for (const [tileSize, count] of spectralV3Sizes) {
       totalCorrelationSamples += spectralCost(png.width, png.height, tileSize, count, 'sliding')
     }
     for (const component of scannedComponents) {
@@ -555,7 +576,7 @@ export function decodePng(
     }
   }
 
-  // v2: shift-invariant spectral detection in sliding 2T windows.
+  // v2: shift-invariant spectral detection in sliding 2T windows (chroma).
   for (const scale of scales) {
     const bySize = new Map<number, ComponentDescriptor[]>()
     for (const component of spectralComponents) {
@@ -567,7 +588,27 @@ export function decodePng(
       const results = detectSpectral(png.data, png.width, png.height, tileSize, batch.map((component) => {
         const payload = createPatternPayload(component)
         return { waves: patternWaves(payload), pattern: generatePattern(payload, tileSize, intensity, 2) }
-      }), { mode: 'sliding', threshold })
+      }), { mode: 'sliding', threshold, channel: 'chroma' })
+      batch.forEach((component, index) => {
+        if (results[index].score < threshold) return
+        keep({ ...component, score: results[index].score, count: results[index].count, tileSize })
+      })
+    }
+  }
+
+  // v3: same shape, luma channel. Survives JPEG 4:2:0 subsampling.
+  for (const scale of scales) {
+    const bySize = new Map<number, ComponentDescriptor[]>()
+    for (const component of spectralV3Components) {
+      const tileSize = Math.round(resolvePatternSize(component, baseSize) * scale)
+      if (tileSize < 16 || tileSize > 512 || png.width < tileSize || png.height < tileSize) continue
+      bySize.set(tileSize, [...(bySize.get(tileSize) ?? []), component])
+    }
+    for (const [tileSize, batch] of bySize) {
+      const results = detectSpectral(png.data, png.width, png.height, tileSize, batch.map((component) => {
+        const payload = createPatternPayload(component)
+        return { waves: patternWaves(payload), pattern: generatePattern(payload, tileSize, intensity, 3) }
+      }), { mode: 'sliding', threshold, channel: 'luma' })
       batch.forEach((component, index) => {
         if (results[index].score < threshold) return
         keep({ ...component, score: results[index].score, count: results[index].count, tileSize })
@@ -716,7 +757,7 @@ interface CliOptions {
   json: boolean
 }
 
-const CLI_USAGE = 'Usage: pixelprovenance-decode <image.png> --registry <components.json> [--threshold 0.5 (v2) | 0.7 (v1)] [--pattern-size 64] [--intensity 0.12] [--scale auto|1|2] [--step pixels] [--pattern-version 1|2] [--json]'
+const CLI_USAGE = 'Usage: pixelprovenance-decode <image.png> --registry <components.json> [--threshold 0.5 (v2/v3) | 0.7 (v1)] [--pattern-size 64] [--intensity 0.12] [--scale auto|1|2] [--step pixels] [--pattern-version 1|2|3] [--json]'
 
 function readFlag(args: string[], flag: string): string | undefined {
   const index = args.indexOf(flag)
@@ -784,8 +825,8 @@ function parseCli(args: string[]): CliOptions {
 
 function parsePatternVersion(value: string | undefined): PatternVersion | undefined {
   if (value === undefined) return undefined
-  if (value === '1' || value === '2') return Number(value) as PatternVersion
-  throw new Error('--pattern-version must be 1 or 2')
+  if (value === '1' || value === '2' || value === '3') return Number(value) as PatternVersion
+  throw new Error('--pattern-version must be 1, 2, or 3')
 }
 
 function runCli(args: string[]): number {

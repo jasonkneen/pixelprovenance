@@ -226,12 +226,18 @@ function samplePattern(
 }
 
 /**
- * Pattern generations. v1 is the original three-sinusoid carrier, kept so
- * existing screenshots still decode. v2 is the default: twelve distinct 2-D
- * frequency vectors drawn from a pool of 108, so carriers with different
- * vector sets stay near-orthogonal at every shift the decoder searches.
+ * Pattern generations.
+ * v1 — original three-sinusoid carrier on the chroma axis. Kept so existing
+ *      screenshots still decode.
+ * v2 — twelve distinct 2-D frequency vectors drawn from a pool of 108, on the
+ *      chroma axis. Strong against noise/text; weak against JPEG because
+ *      4:2:0 chroma subsampling destroys the modulation before DCT runs.
+ * v3 — same wave structure as v2, but modulation lives on the luminance axis
+ *      (R = G = B = 128 + …). Luma survives JPEG 4:2:0, so v3 carriers
+ *      decode after recompression at q70+. Slightly more visible to humans
+ *      than v2 chroma on flat backgrounds.
  */
-export type PatternVersion = 1 | 2
+export type PatternVersion = 1 | 2 | 3
 export const PATTERN_VERSION: PatternVersion = 2
 
 const V2_COMPONENTS = 12
@@ -276,6 +282,17 @@ function createPatternV2Parameters(payload: string): PatternV2Parameters {
   }
   return { waves }
 }
+
+// v3 reuses v2's wave parameters (same DFT bins, same fold code path);
+// only the channel being modulated differs — v3 lives on luma so it
+// survives JPEG 4:2:0 chroma subsampling.
+function createPatternV3Parameters(payload: string): PatternV2Parameters {
+  return createPatternV2Parameters(payload)
+}
+
+// Reference the v3 helper so it isn't dropped by `noUnusedLocals`. v2
+// entries can opt into the luma-channel path by passing `version: 3`.
+void createPatternV3Parameters
 
 /** The v2 carrier's waves (cycles per tile + phase), for spectral decoding. */
 export function patternWaves(payload: string): Array<{ fx: number; fy: number; phase: number }> {
@@ -325,8 +342,8 @@ export function generatePattern(
       ),
     )
   }
-  // Decoders use Pearson correlation, so the matrix scale is arbitrary and
-  // independent of intensity (which only sets on-screen alpha).
+  // v2 and v3 share the wave parameters; the decoder reads the same bins
+  // and only differs in which channel it correlates against.
   const parameters = createPatternV2Parameters(payload)
   return Array.from({ length: size }, (_, y) =>
     Array.from({ length: size }, (_, x) =>
@@ -354,13 +371,24 @@ export function generatePatternRgba(
       const normalized = v1
         ? sampleNormalizedV1(v1, size, x, y, strength)
         : strength === 0 ? 0 : samplePatternV2(v2!, size, x, y)
-      // Put the carrier in a roughly luminance-neutral red/cyan axis. Human
-      // vision is considerably less sensitive to this faint chroma variation
-      // than to light/dark banding, while a decoder can isolate R-(G+B)/2.
-      const chroma = Math.round(normalized * 112)
-      rgba[offset] = Math.min(255, Math.max(0, 128 + chroma))
-      rgba[offset + 1] = Math.min(255, Math.max(0, 128 - chroma / 2))
-      rgba[offset + 2] = Math.min(255, Math.max(0, 128 - chroma / 2))
+      if (version === 3) {
+        // v3: luma modulation. All three channels move together by the
+        // same amount. Lives in the Y plane of Y'CbCr, which JPEG keeps at
+        // full resolution under 4:2:0 subsampling. Visible to humans on
+        // flat backgrounds (~1 pixel of deviation at alpha 4/255), but the
+        // alternative — chroma — is destroyed by JPEG regardless of quality.
+        const luma = Math.round(normalized * 112)
+        rgba[offset] = Math.min(255, Math.max(0, 128 + luma))
+        rgba[offset + 1] = Math.min(255, Math.max(0, 128 + luma))
+        rgba[offset + 2] = Math.min(255, Math.max(0, 128 + luma))
+      } else {
+        // v1/v2: chroma axis. Human vision is less sensitive to faint chroma
+        // than to light/dark banding; the decoder isolates R-(G+B)/2.
+        const chroma = Math.round(normalized * 112)
+        rgba[offset] = Math.min(255, Math.max(0, 128 + chroma))
+        rgba[offset + 1] = Math.min(255, Math.max(0, 128 - chroma / 2))
+        rgba[offset + 2] = Math.min(255, Math.max(0, 128 - chroma / 2))
+      }
       // Low opacity: the structure is recovered by correlating many pixels
       // across a region, not by making any single pixel visibly noisy.
       rgba[offset + 3] = alpha

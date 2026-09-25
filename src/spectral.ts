@@ -1,14 +1,18 @@
 import type { PatternMatrix } from './pattern.js'
 
 /**
- * Shift-invariant detector for v2 carriers.
+ * Shift-invariant detector for v2/v3 carriers.
  *
  * A carrier tiles with period T, so folding a region modulo T stacks every
  * repetition into one T×T cell grid and averages away 8-bit posterisation.
- * The v2 carrier is a sum of known integer-frequency waves, so the folded
+ * The carrier is a sum of known integer-frequency waves, so the folded
  * grid's DFT at those bins gives the correlation at every cyclic shift in
  * O(waves) per shift — no position grid to fall between, unlike a sampled
  * spatial search whose peak is only ~2px wide at these frequencies.
+ *
+ * v2 carriers live on the chroma axis (`R − (G+B)/2`) and decode against
+ * the chroma channel. v3 carriers live on the luminance axis (`R = G = B`)
+ * to survive JPEG 4:2:0 chroma subsampling, so they decode against luma.
  */
 
 export interface Wave {
@@ -32,10 +36,15 @@ export interface SpectralMatch {
   count: number
 }
 
-// Adjacent-pixel luma limit separating content edges from the carrier. The
-// carrier shifts R by +2k and G/B by −k, so it is luminance-neutral at any
-// intensity; a chroma limit would mask strong or small-tile carriers.
-const MAX_LUMA_STEP = 6
+// Adjacent-pixel chroma limit separating content edges from the carrier.
+// The smoothness test must not depend on which channel the carrier lives on:
+// v2 carriers are luma-neutral so an adjacent-luma test trivially passes, but
+// v3 carriers modulate luma directly (R = G = B = 128 + k) and the highest
+// wave pushes adjacent luma steps past the test threshold. Chroma is content-
+// sensitive (text strokes, borders, JPEG edges all show up as a chroma jump)
+// and is irrelevant to either v2 or v3 as a carrier channel, so testing
+// chroma separates content edges from carrier in both versions.
+const MAX_CHROMA_STEP = 6
 const MIN_FILLED_SHARE = 0.5
 const MAX_CYCLES = 7
 
@@ -49,8 +58,13 @@ interface Folded {
 
 /**
  * Fold a window modulo `size`. Edge pixels are skipped, and each flat region
- * (connected through smooth steps) has its own mean chroma removed first, so
- * a card beside a differently tinted margin does not imprint its outline.
+ * (connected through smooth steps) has its own mean removed first, so a card
+ * beside a differently tinted margin does not imprint its outline.
+ *
+ * `channel` selects which per-pixel signal feeds the carrier:
+ *  - 'chroma' — `R − (G+B)/2`. Used by v1/v2. Destroyed by JPEG 4:2:0.
+ *  - 'luma'   — `(R+G+B)/3`. Used by v3. Survives JPEG because the Y plane
+ *                of Y'CbCr is kept at full resolution under 4:2:0 subsampling.
  */
 function fold(
   data: ArrayLike<number>,
@@ -61,6 +75,7 @@ function fold(
   windowWidth: number,
   windowHeight: number,
   size: number,
+  channel: 'chroma' | 'luma' = 'chroma',
 ): Folded | null {
   const w = Math.min(width, originX + windowWidth) - originX
   const h = Math.min(height, originY + windowHeight) - originY
@@ -74,13 +89,23 @@ function fold(
       const index = y * w + x
       if (data[offset + 3] === 0) continue
       visible[index] = 1
-      chroma[index] = data[offset] - (data[offset + 1] + data[offset + 2]) / 2
-      luma[index] = (data[offset] + data[offset + 1] + data[offset + 2]) / 3
+      const r = data[offset]
+      const g = data[offset + 1]
+      const b = data[offset + 2]
+      chroma[index] = r - (g + b) / 2
+      luma[index] = (r + g + b) / 3
     }
   }
+  const signal = channel === 'luma' ? luma : chroma
+  // Smoothness test uses the *non-signal* channel. v2 carriers are
+  // luminance-neutral, so adjacent luma steps are ~0 and every pixel is
+  // smooth; chroma is left to carry the signal. v3 carriers make R=G=B, so
+  // chroma is ~0 and luma carries the signal. Content edges (text strokes,
+  // borders) produce a sharp jump on both axes, so either test catches them.
+  const smoothChannel = channel === 'luma' ? chroma : luma
   const smooth = (first: number, second: number) =>
     visible[first] === 1 && visible[second] === 1 &&
-    Math.abs(luma[first] - luma[second]) <= MAX_LUMA_STEP
+    Math.abs(smoothChannel[first] - smoothChannel[second]) <= MAX_CHROMA_STEP
   // A pixel is usable when it is smooth with every in-window 4-neighbour.
   const usable = new Uint8Array(pixels)
   for (let y = 0; y < h; y += 1) {
@@ -108,7 +133,7 @@ function fold(
     stack.push(start)
     while (stack.length) {
       const index = stack.pop()!
-      sum += chroma[index]
+      sum += signal[index]
       count += 1
       const x = index % w
       const neighbours = [
@@ -137,7 +162,7 @@ function fold(
       const region = label[index]
       if (region < 0 || regionCounts[region] < minRegion) continue
       const cell = cellRow + (x % size)
-      sums[cell] += chroma[index] - regionSums[region] / regionCounts[region]
+      sums[cell] += signal[index] - regionSums[region] / regionCounts[region]
       counts[cell] += 1
     }
   }
@@ -333,10 +358,11 @@ export function detectSpectral(
   height: number,
   size: number,
   entries: SpectralEntry[],
-  options: { mode: 'whole' | 'sliding'; threshold: number },
+  options: { mode: 'whole' | 'sliding'; threshold: number; channel?: 'chroma' | 'luma' },
 ): SpectralMatch[] {
   const results: SpectralMatch[] = entries.map(() => ({ score: 0, x: 0, y: 0, count: 0 }))
   if (size > width || size > height || entries.length === 0) return results
+  const channel = options.channel ?? 'chroma'
   const windows: Array<{ x: number; y: number; w: number; h: number }> = []
   if (options.mode === 'whole') {
     windows.push({ x: 0, y: 0, w: width, h: height })
@@ -353,7 +379,7 @@ export function detectSpectral(
   // Bound-pruned search below this fraction of the threshold.
   const floor = options.threshold * 0.8
   for (const window of windows) {
-    const folded = fold(data, width, height, window.x, window.y, window.w, window.h, size)
+    const folded = fold(data, width, height, window.x, window.y, window.w, window.h, size, channel)
     if (!folded) continue
     entries.forEach((entry, index) => {
       const match = matchFolded(folded, entry, floor)
