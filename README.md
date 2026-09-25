@@ -1,10 +1,49 @@
 # PixelProvenance
 
-PixelProvenance is an experimental React tool for tracing screenshot regions back to code. It embeds each tagged region’s path and source location into a faint, luminance-balanced chroma pattern in the pixels, then recovers that mapping by correlating a crop against a codebook of known embeddings.
+PixelProvenance tags UI regions so a screenshot or a click can be turned into a package a model can use: path, selector, optional `file:line:column`, and a PNG.
 
-The repository includes an interactive web demo, the React package, a decoder CLI, and a small test suite covering deterministic generation and 1x/2x decoding.
+The default install is a drop-in script with its own Select / Crop toolbar. React `DevTag` and a PNG decoder CLI are optional.
 
-The package is not currently available from the public npm registry. Use the local checkout until a release is published.
+Not on the public npm registry yet. Install from git:
+
+```bash
+npm install github:jasonkneen/pixelprovenance
+```
+
+Agents: read [`llms.txt`](llms.txt), then [`docs/llms.txt`](docs/llms.txt) and [`skills/pixelprovenance/SKILL.md`](skills/pixelprovenance/SKILL.md). Pasteable system prompt: [`docs/prompts/install-system.md`](docs/prompts/install-system.md).
+
+## Add to a website
+
+The minimum install is a script tag. It draws its own toolbar. **Select** (click an element) is the default; **Crop** draws a rectangle. Either gesture emits a JSON package plus a PNG that you can POST to a model worker, listen for on `window`, or wrap in MCP later.
+
+```html
+<script
+  src="./node_modules/pixelprovenance/dist/pixelprovenance-dropin.js"
+  data-pp-page="pricing"
+  data-pp-endpoint="http://127.0.0.1:8787/package"
+></script>
+
+<section data-pp="hero">…</section>
+<button data-pp="cta" data-pp-source="src/Pricing.tsx:88:9">Start</button>
+```
+
+The toolbar is on by default on `localhost` / `127.0.0.1`. Set `data-pp-enabled="true"` to force it on, or `"false"` to keep it off. Nested `data-pp` values become paths such as `pricing/hero/cta`.
+
+The package is also available as `import { mount } from 'pixelprovenance/dropin'`. Listen for `pixelprovenance:package` on `window`, or `PixelProvenance.onPackage(cb)`.
+
+### Agents and plugins
+
+This repo is a Claude Code plugin (`.claude-plugin/plugin.json`). From a host app:
+
+```bash
+claude plugin install /absolute/path/to/pixelprovenance
+# or, after cloning:
+# claude --plugin-dir /absolute/path/to/pixelprovenance
+```
+
+Then `/install-pixelprovenance [pageId] [endpoint-url]`.
+
+Grok and Codex pick up the same skill from `skills/pixelprovenance/` (this repo also has pointers under `.grok/skills` and `.agents/skills`). Copy that skill into the host's `.agents/skills/pixelprovenance/` so later sessions can maintain the install.
 
 ## Run the web demo
 
@@ -124,9 +163,12 @@ passes count toward the computation limit.
 
 ## Package API
 
+- Drop-in: `pixelprovenance-dropin.js` or `import { mount } from 'pixelprovenance/dropin'`.
 - `DevTag` and `DevTagRoot` render hierarchical signal regions.
 - `generatePattern` and `generatePatternRgba` expose the deterministic pattern engine.
 - `buildRegistry`, `scanPixels`, `scanPng`, and `decodePng` are exported from `pixelprovenance/decode`.
+
+Human API tables: [`USAGE.md`](USAGE.md). Machine contract: [`docs/llms.txt`](docs/llms.txt).
 
 ## Validate the repository
 

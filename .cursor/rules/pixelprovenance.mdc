@@ -1,0 +1,6 @@
+---
+description: Install PixelProvenance drop-in toolbar into a host website
+alwaysApply: false
+---
+
+When the user asks to add PixelProvenance, a screenshot picker, `data-pp` tags, or a UI selector for a model, follow `skills/pixelprovenance/SKILL.md` and `docs/llms.txt`. Default is the drop-in toolbar, not wrapping the React tree in `DevTag`.

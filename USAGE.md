@@ -2,8 +2,12 @@
 
 ## Installation
 
-The package is not yet published. Build and pack a checkout before installing
-it into another project:
+The package is not yet published to the public npm registry. Install from git,
+or pack a checkout:
+
+```bash
+npm install github:jasonkneen/pixelprovenance
+```
 
 ```bash
 cd /absolute/path/to/pixelprovenance
@@ -15,13 +19,69 @@ cd /path/to/consumer
 npm install /absolute/path/to/pixelprovenance/pixelprovenance-0.2.0.tgz
 ```
 
-Or install the published package when available:
+When a registry release exists:
 
 ```bash
 npm install pixelprovenance
 ```
 
 React 18 and React 19 are supported peer ranges. Node 20.19 or newer is required.
+
+## Drop-in toolbar
+
+For a site that is not wrapping every region in React tags, load the IIFE and mark the nodes you care about:
+
+```html
+<script
+  src="./node_modules/pixelprovenance/dist/pixelprovenance-dropin.js"
+  data-pp-page="pricing"
+  data-pp-endpoint="http://127.0.0.1:8787/package"
+></script>
+```
+
+Or mount from a bundler:
+
+```ts
+import { mount } from 'pixelprovenance/dropin'
+
+mount({
+  pageId: 'pricing',
+  endpoint: 'http://127.0.0.1:8787/package',
+  enabled: true,
+})
+```
+
+Select (click) packages the deepest `[data-pp]`, else `[data-testid]`, else `[id]`. Crop decodes against the live codebook. Both dispatch `pixelprovenance:package` and POST to `endpoint` when set.
+
+The toolbar stays off on public hosts unless `data-pp-enabled="true"` or `enabled: true`.
+
+### Script attributes
+
+| Attribute | Purpose | Default |
+| --- | --- | --- |
+| `data-pp-page` | Root path segment | `page` |
+| `data-pp-endpoint` | POST URL for the selection package | none |
+| `data-pp-enabled` | `true` / `false` | on for localhost only |
+| `data-pp-intensity` | Signal strength 0–1 | `0.06` |
+| `data-pp-pattern-size` | CSS tile 16–256 | `64` |
+| `data-pp-debug` | Show region borders | `false` |
+
+### Region attributes
+
+| Attribute | Purpose |
+| --- | --- |
+| `data-pp` | Stable path segment |
+| `data-pp-type` | Category (default: tag name) |
+| `data-pp-source` | `file:line:column` embedded in the pattern |
+| `data-pp-pattern-size` | Per-region tile; 16–32 for small controls |
+
+### Selection package
+
+Dispatched as `pixelprovenance:package` (`event.detail`). Posted to `endpoint` when set. HTML truncated to 4000 characters. `score` is crop-decode only.
+
+See `docs/llms.txt` for the full object.
+
+Agents installing this into another app should follow `skills/pixelprovenance/SKILL.md`.
 
 ## Component props
 

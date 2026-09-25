@@ -25,6 +25,7 @@
     "src/main.tsx",
     "src/pattern.ts",
     "src/vite-env.d.ts",
+    "src/dropin/**/*.ts",
     "src/**/*.test.ts",
     "src/**/*.test.tsx",
     "decoder/decode.ts",

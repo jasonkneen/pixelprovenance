@@ -1,0 +1,142 @@
+# PixelProvenance agent contract
+
+Version: 0.2.0
+Event: `pixelprovenance:package`
+Toolbar default: on for localhost, 127.0.0.1, [::1]; off elsewhere unless `data-pp-enabled="true"` or `enabled: true`.
+
+## What to install
+
+Prefer the drop-in. It paints a Select/Crop toolbar, tags `[data-pp]` with the chroma signal, and emits a selection package. React `DevTag` is optional for apps that want wrapper components instead of attributes. The CLI decoder is optional and used for PNG files plus a codebook JSON, not for the default toolbar flow.
+
+Do not auto-tag every `div`. Do not enable the overlay in production builds unless the user asked for that.
+
+## Package install
+
+1. `npm view pixelprovenance version` — if it exists, `npm install pixelprovenance`.
+2. Else `npm install github:jasonkneen/pixelprovenance` (or the host's package manager equivalent).
+3. Else pack a local checkout: `npm pack` in this repo, then `npm install /path/to/pixelprovenance-0.2.0.tgz`.
+
+Peer: React 18 or 19 only if using `DevTag`. Node >= 20.19 for the CLI. The IIFE drop-in has no React peer.
+
+After install, `node_modules/pixelprovenance/dist/pixelprovenance-dropin.js` must exist. If it is missing, run `npm run build:lib` in the package (git installs run `prepare` → `build:lib`).
+
+## Drop-in (default)
+
+### Script tag
+
+```html
+<script
+  src="/pixelprovenance-dropin.js"
+  data-pp-page="pricing"
+  data-pp-endpoint="http://127.0.0.1:8787/package"
+></script>
+```
+
+Copy `dist/pixelprovenance-dropin.js` into the host `public/` directory, or point `src` at the file under `node_modules` if the bundler serves it.
+
+### Bundler
+
+```ts
+import { mount } from 'pixelprovenance/dropin'
+
+mount({
+  pageId: 'pricing',
+  endpoint: 'http://127.0.0.1:8787/package',
+  enabled: import.meta.env.DEV,
+})
+```
+
+Mount once from a client-only root. Next.js: `'use client'` wrapper. Do not import this module from a Server Component.
+
+### Script attributes (`data-pp-*` on the script tag)
+
+| Attribute | Maps to | Default |
+| --- | --- | --- |
+| `data-pp-page` | `pageId` | `page` |
+| `data-pp-endpoint` | POST URL | none |
+| `data-pp-enabled` | `true` / `false` | loopback on, else off |
+| `data-pp-intensity` | number 0–1 | `0.06` |
+| `data-pp-pattern-size` | CSS tile 16–256 | `64` |
+| `data-pp-debug` | `true` | `false` |
+
+### Region attributes (on host markup)
+
+| Attribute | Meaning |
+| --- | --- |
+| `data-pp` | Stable path segment. Required for a named region. |
+| `data-pp-type` | Category in the seed. Default: tag name. |
+| `data-pp-source` | `file:line:column` hashed into the pattern. |
+| `data-pp-pattern-size` | Leaf tile size. Use 16–32 on small controls. |
+
+Nested `data-pp` builds `pageId/parent/child`. Click target: deepest `[data-pp]`, else `[data-testid]`, else `[id]`, else the element. The toolbar is marked `data-pp-toolbar` and is not selectable.
+
+### Global API
+
+After mount, `window.PixelProvenance` has `mount`, `unmount`, `select`, `crop`, `cancel`, `onPackage(cb)`, `exportRegistry()`.
+
+`onPackage` is also `import { deliverPackage } from 'pixelprovenance/dropin'` → `deliverPackage.subscribe`.
+
+## Selection package
+
+`version` is the literal `1`. HTML is truncated to 4000 characters. `score` is set only after a crop decode.
+
+```json
+{
+  "version": 1,
+  "pageId": "pricing",
+  "path": "pricing/plan-card/cta",
+  "type": "button",
+  "depth": 3,
+  "selector": "[data-pp=\"cta\"]",
+  "rect": { "x": 80, "y": 420, "w": 160, "h": 44 },
+  "source": { "file": "src/Pricing.tsx", "line": 88, "column": 9 },
+  "html": "<button data-pp=\"cta\">Start</button>",
+  "image": "data:image/png;base64,...",
+  "capturedAt": "2026-09-08T00:00:00.000Z"
+}
+```
+
+Delivery order:
+
+1. `window` event `pixelprovenance:package` (`event.detail` is the object)
+2. `POST` to `endpoint` with `Content-Type: application/json` if set
+3. `onPackage` subscribers
+
+A model should consume this JSON. Do not ask the model to decode the frequency pattern.
+
+## React tags (optional)
+
+```tsx
+import { DevTag, DevTagRoot } from 'pixelprovenance'
+
+<DevTagRoot pageId="DASHBOARD" enabled={import.meta.env.DEV}>
+  <DevTag id="card" type="panel" source={{ file: 'src/Dashboard.tsx', line: 8, column: 9 }}>
+    <Card />
+  </DevTag>
+</DevTagRoot>
+```
+
+`source` is part of the pattern seed. A CLI codebook must repeat the same path, type, depth, and source. Drop-in will not double-paint a node that already has a DevTag signal child.
+
+## Decoder CLI (optional)
+
+```bash
+pixelprovenance-decode screenshot.png --registry components.json --json
+```
+
+`--registry` is required. Exit 0 on match, 1 on no match or error. JSON no-match is `[]`.
+
+## Verify
+
+On localhost:
+
+1. Toolbar shows Select, Crop, Cancel.
+2. Select → click a `[data-pp]` node.
+3. A `pixelprovenance:package` event fires with the expected `path`.
+4. If `endpoint` is set, the POST body is that object.
+
+Host tests: keep the overlay behind the host dev flag.
+
+## Out of scope unless asked
+
+MCP server, SSE worker, npm publish, auto-tagging the whole DOM, production-on-by-default.

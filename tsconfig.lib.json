@@ -10,6 +10,13 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext"
   },
-  "include": ["src/DevTag.tsx", "src/index.ts", "src/pattern.ts", "decoder/decode.ts"],
+  "include": [
+    "src/DevTag.tsx",
+    "src/index.ts",
+    "src/pattern.ts",
+    "src/demo-analysis.ts",
+    "src/dropin/**/*.ts",
+    "decoder/decode.ts"
+  ],
   "exclude": ["**/*.test.ts", "**/*.test.tsx", "src/demo.tsx", "node_modules", "dist"]
 }

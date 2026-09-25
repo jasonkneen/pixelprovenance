@@ -54,9 +54,10 @@ const consumerProgram = String.raw`
     generatePatternRgba,
   } from 'pixelprovenance'
   import { decodePng } from 'pixelprovenance/decode'
+  import { mount } from 'pixelprovenance/dropin'
   import { renderToStaticMarkup } from 'react-dom/server'
 
-  if (typeof DevTag !== 'function' || typeof decodePng !== 'function') {
+  if (typeof DevTag !== 'function' || typeof decodePng !== 'function' || typeof mount !== 'function') {
     throw new Error('Public package exports are missing')
   }
 

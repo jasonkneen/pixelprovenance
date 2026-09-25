@@ -1,7 +1,7 @@
 {
   "name": "pixelprovenance",
   "version": "0.2.0",
-  "description": "Experimental component identification for React screenshots using deterministic frequency patterns",
+  "description": "Drop-in toolbar and React tags that package a selected UI region (path, source, PNG) for a model",
   "type": "module",
   "main": "./dist/src/index.js",
   "module": "./dist/src/index.js",
@@ -14,7 +14,12 @@
     "./decode": {
       "types": "./dist/decoder/decode.d.ts",
       "import": "./dist/decoder/decode.js"
-    }
+    },
+    "./dropin": {
+      "types": "./dist/src/dropin/index.d.ts",
+      "import": "./dist/src/dropin/index.js"
+    },
+    "./pixelprovenance-dropin.js": "./dist/pixelprovenance-dropin.js"
   },
   "bin": {
     "pixelprovenance-decode": "dist/decoder/decode.js"
@@ -29,7 +34,8 @@
     "verify:package": "node scripts/verify-package.mjs",
     "build": "npm run build:lib && npm run build:demo",
     "build:demo": "npm run typecheck && vite build",
-    "build:lib": "npm run clean:lib && tsc --project tsconfig.lib.json",
+    "build:lib": "npm run clean:lib && tsc --project tsconfig.lib.json && npm run build:dropin",
+    "build:dropin": "vite build --config vite.dropin.config.ts",
     "preview": "vite preview",
     "decode": "tsx decoder/decode.ts",
     "check": "npm run typecheck && npm test && npm run build && npm run verify:package",
@@ -37,6 +43,7 @@
     "prepublishOnly": "npm run test && npm run build:lib"
   },
   "dependencies": {
+    "html-to-image": "^1.11.13",
     "pngjs": "^7.0.0"
   },
   "peerDependencies": {
@@ -49,7 +56,6 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^6.0.5",
-    "html-to-image": "^1.11.13",
     "jsdom": "^27.4.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
@@ -60,14 +66,23 @@
   },
   "files": [
     "dist",
-    "registry"
+    "registry",
+    "skills",
+    "commands",
+    ".claude-plugin",
+    "llms.txt",
+    "docs/llms.txt",
+    "docs/prompts",
+    "USAGE.md",
+    "AGENTS.md"
   ],
   "keywords": [
     "dev-tools",
     "screenshot",
     "debugging",
     "component-tagging",
-    "steganography"
+    "drop-in",
+    "selector-toolbar"
   ],
   "license": "CC-BY-NC-4.0",
   "repository": {

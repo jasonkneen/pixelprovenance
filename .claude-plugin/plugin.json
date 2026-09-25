@@ -1,0 +1,19 @@
+{
+  "name": "pixelprovenance",
+  "version": "0.2.0",
+  "description": "Install a UI selector toolbar that packages clicked regions for a model",
+  "author": {
+    "name": "Jason Kneen",
+    "url": "https://github.com/jasonkneen"
+  },
+  "homepage": "https://github.com/jasonkneen/pixelprovenance#readme",
+  "repository": "https://github.com/jasonkneen/pixelprovenance",
+  "license": "CC-BY-NC-4.0",
+  "keywords": [
+    "screenshot",
+    "devtools",
+    "selector",
+    "drop-in",
+    "ui-to-model"
+  ]
+}

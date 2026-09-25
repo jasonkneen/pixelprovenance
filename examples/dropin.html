@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PixelProvenance drop-in</title>
+    <style>
+      body { margin: 40px; font: 16px/1.4 ui-sans-serif, system-ui, sans-serif; color: #171927; background: #f5f2eb; }
+      section, article { margin: 24px 0; padding: 24px; background: #fffdf9; border: 1px solid #d7d2c8; }
+      button { padding: 8px 14px; }
+    </style>
+  </head>
+  <body>
+    <section data-pp="hero" data-pp-type="panel">
+      <h1>Pricing</h1>
+      <p>Mark regions with <code>data-pp</code>, then use the toolbar.</p>
+    </section>
+    <article data-pp="plan-card" data-pp-type="card">
+      <h2>Pro</h2>
+      <button data-pp="cta" data-pp-type="button" data-pp-source="src/Pricing.tsx:88:9">Start</button>
+    </article>
+    <pre id="log"></pre>
+    <script src="../dist/pixelprovenance-dropin.js" data-pp-page="pricing" data-pp-enabled="true"></script>
+    <script>
+      window.addEventListener('pixelprovenance:package', (event) => {
+        const pkg = event.detail
+        document.getElementById('log').textContent = JSON.stringify(
+          { path: pkg.path, type: pkg.type, selector: pkg.selector, source: pkg.source },
+          null,
+          2,
+        )
+      })
+    </script>
+  </body>
+</html>

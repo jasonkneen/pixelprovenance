@@ -1,0 +1,33 @@
+# PixelProvenance — LLM index
+
+Read this file first. Then load the files listed for the task.
+
+Product: screenshot-readable UI identity. A drop-in toolbar lets a human pick a region. The page emits a JSON package (path, selector, optional source, PNG) for a model over a window event, HTTP POST, or a later MCP/SSE wrapper.
+
+License: CC BY-NC 4.0. Do not install into a commercial production site without a license change.
+
+Not on the public npm registry as of 0.2.0. Install from git or a packed tarball.
+
+## Files
+
+- `docs/llms.txt` — install contract, attributes, package schema, delivery
+- `skills/pixelprovenance/SKILL.md` — procedure for installing into a host app
+- `USAGE.md` — React `DevTag` props and decoder CLI
+- `AGENTS.md` — rules for working in this repository
+- `examples/dropin.html` — working drop-in page
+
+## Default install
+
+Drop-in toolbar + `data-pp` attributes. Do not wrap every React tree unless the host already wants `DevTag`.
+
+```html
+<script
+  src="./node_modules/pixelprovenance/dist/pixelprovenance-dropin.js"
+  data-pp-page="PAGE_ID"
+  data-pp-endpoint="http://127.0.0.1:8787/package"
+></script>
+```
+
+```bash
+npm install github:jasonkneen/pixelprovenance
+```
